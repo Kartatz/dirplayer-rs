@@ -166,10 +166,6 @@ impl CastManager {
                 name_index: RefCell::new(None),
                 font_table: HashMap::new(),
             };
-            if let Some(cast_def) = cast_def {
-                cast.apply_cast_def(dir, cast_def, bitmap_manager, &dir.font_table);
-                self.clear_movie_script_cache();
-            }
             casts.push(cast);
         }
         self.casts = casts;

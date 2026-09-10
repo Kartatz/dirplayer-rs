@@ -835,8 +835,8 @@ pub fn compute_filmloop_initial_rect_with_members(
             match &sprite_member.member_type {
                 CastMemberType::Bitmap(bm) => {
                     // Try to get actual bitmap dimensions from BitmapManager
-                    let (w, h) = if let Some(bitmap) = player.bitmap_manager.get_bitmap(bm.image_ref) {
-                        (bitmap.width as i32, bitmap.height as i32)
+                    let (w, h) = if let Some(meta) = player.bitmap_manager.get_bitmap_meta(bm.image_ref) {
+                        (meta.width as i32, meta.height as i32)
                     } else {
                         // Fall back to BitmapInfo dimensions
                         (bm.info.width as i32, bm.info.height as i32)

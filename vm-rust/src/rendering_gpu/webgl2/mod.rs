@@ -5652,8 +5652,9 @@ impl WebGL2Renderer {
             }
         }
 
-        // Get bitmap data to check version
-        let bitmap = player.bitmap_manager.get_bitmap(image_ref)?;
+        // Get bitmap data to check version (owned: further manager borrows
+        // happen below for the mask member).
+        let bitmap = player.bitmap_manager.get_bitmap(image_ref)?.clone();
         // Skip rendering for empty bitmaps (data empty OR zero dimensions).
         // Director's empty cast members (e.g. cc.jukebox.catalog.add.btn.dim
         // — placeholder bitmaps with rect 0,0,0,0) are rendered as nothing in
@@ -5750,7 +5751,7 @@ impl WebGL2Renderer {
             (None, (0, 0))
         };
 
-        let rgba_data = Self::bitmap_to_rgba(bitmap, &palettes, ink, colorize, sprite_bg_color, mask_bitmap_ref.as_ref(), mask_offset, is_flash_bitmap);
+        let rgba_data = Self::bitmap_to_rgba(&bitmap, &palettes, ink, colorize, sprite_bg_color, mask_bitmap_ref.as_ref(), mask_offset, is_flash_bitmap);
 
         // Validate data size
         let expected_size = (width * height * 4) as usize;

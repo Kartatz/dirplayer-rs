@@ -128,7 +128,7 @@ impl CastLib {
         let file_name = self.file_name.clone();
         if file_name.is_empty() {
             return;
-        } else if let Some(cached_file) = dir_cache.get(&*file_name) {
+        } else if let Some(cached_file) = dir_cache.get_mut(&*file_name) {
             self.load_from_dir_file(cached_file, &file_name, bitmap_manager);
         } else {
             log::debug!("Loading cast {} into castLib {} ('{}')", self.file_name, self.number, self.name);
@@ -138,8 +138,16 @@ impl CastLib {
                 net_manager.await_task(task_id).await;
             }
             let task = net_manager.get_task(task_id).unwrap();
-            let result = net_manager.get_task_result(Some(task_id)).unwrap();
-            self.on_cast_preload_result(&result, &task.resolved_url, bitmap_manager, dir_cache);
+            let resolved_url = task.resolved_url.clone();
+            // Take (move) the payload instead of cloning it — a clone held
+            // the whole file twice per cast during parse.
+            let result = net_manager.take_task_result(task_id).unwrap();
+            self.on_cast_preload_result(&result, &resolved_url, bitmap_manager, dir_cache);
+            // The bytes were fully consumed by on_cast_preload_result (the
+            // pending encoded sources and chunk structs own their copies
+            // now); dropping `result` here releases the final reference
+            // immediately instead of retaining the download set of every
+            // castLib (~450 MB for mizube's eleven casts).
         }
     }
 
@@ -163,9 +171,34 @@ impl CastLib {
                 &get_base_url(resolved_url).to_string(),
             );
             if let Ok(cast_file) = cast_file {
+                #[cfg(target_arch = "wasm32")]
+                { let mb = heap_mb(); log::error!("[heap] cast '{}' parsed, heap={} MB (after read_director_file_bytes)", load_file_name, mb); }
                 dir_cache.insert(load_file_name.into(), cast_file);
-                let cast_file = dir_cache.get(load_file_name).unwrap();
-                self.load_from_dir_file(&cast_file, load_file_name, bitmap_manager);
+                let cast_file = dir_cache.get_mut(load_file_name).unwrap();
+                self.load_from_dir_file(cast_file, load_file_name, bitmap_manager);
+                #[cfg(target_arch = "wasm32")]
+                { let mb = heap_mb(); log::error!("[heap] cast '{}' members applied, heap={} MB (after load_from_dir_file)", load_file_name, mb); }
+                // The members own what they need (pending encoded sources,
+                // text, script refs). The parsed file's chunk views and the
+                // CastDef children were the parse-time source of those copies
+                // and are pure duplication once applied — release them so
+                // cast-heavy movies don't retain ~3x the raw data forever
+                // (mizube: this is what pushed the WASM heap past 4 GB).
+                if let Some(f) = dir_cache.get_mut(load_file_name) {
+                    let view_count = f.chunk_container.cached_chunk_views.len();
+                    f.chunk_container.cached_chunk_views.clear();
+                    let mut freed_children = 0usize;
+                    for cast in &mut f.casts {
+                        for m in cast.members.values_mut() {
+                            freed_children += m.children.len();
+                            m.children.clear();
+                        }
+                    }
+                    log::debug!(
+                        "released {} cached chunk views and {} member children for {}",
+                        view_count, freed_children, load_file_name
+                    );
+                }
                 // We return here because the function `load_from_dir_file()`
                 // has changed our `state` to `Loaded` and we want to keep this.
                 return;
@@ -345,7 +378,7 @@ impl CastLib {
 
     fn load_from_dir_file(
         &mut self,
-        file: &DirectorFile,
+        file: &mut DirectorFile,
         load_file_name: &str,
         bitmap_manager: &mut BitmapManager,
     ) {
@@ -357,14 +390,15 @@ impl CastLib {
         if self.name.is_empty() {
             self.set_name(get_basename_no_extension(load_file_name));
         }
-        if let Some(cast_def) = file.casts.first() {
+        let font_table = file.font_table.clone();
+        if let Some(cast_def) = file.casts.first_mut() {
             log::debug!(
                 "Applying cast def to castLib {} ('{}'): {} members",
                 self.number,
                 self.name,
                 cast_def.members.len()
             );
-            self.apply_cast_def(file, cast_def, bitmap_manager, &file.font_table);
+            self.apply_cast_def_releasing(cast_def, bitmap_manager, &font_table);
         } else {
             log_i(
                 format_args!(
@@ -379,12 +413,35 @@ impl CastLib {
         }
     }
 
-    pub fn apply_cast_def(
+    /// Apply a cast def WITHOUT releasing parse-time copies per member.
+    /// Used for the movie-internal cast, which is small; the external-cast
+    /// path uses [`Self::apply_cast_def_releasing`], which clears each
+    /// member's chunk children after construction so the apply phase
+    /// doesn't transiently double the cast's media.
+    pub fn apply_cast_def_keep(
         &mut self,
-        _: &DirectorFile,
         cast_def: &CastDef,
         bitmap_manager: &mut BitmapManager,
         font_table: &HashMap<u16, String>,
+    ) {
+        self.apply_cast_def_inner(cast_def, bitmap_manager, font_table, false);
+    }
+
+    pub fn apply_cast_def_releasing(
+        &mut self,
+        cast_def: &mut CastDef,
+        bitmap_manager: &mut BitmapManager,
+        font_table: &HashMap<u16, String>,
+    ) {
+        self.apply_cast_def_inner(cast_def, bitmap_manager, font_table, true);
+    }
+
+    fn apply_cast_def_inner(
+        &mut self,
+        cast_def: &CastDef,
+        bitmap_manager: &mut BitmapManager,
+        font_table: &HashMap<u16, String>,
+        release_per_member: bool,
     ) {
         self.lctx = cast_def.lctx.clone();
         // AUTHORITATIVE: a cast's own name table claims the global display
@@ -403,14 +460,65 @@ impl CastLib {
         self.palette_id_offset = cast_def.palette_id_offset;
         self.font_table = font_table.clone();
         self.state = CastLibState::Loaded;
-        for (id, member_def) in &cast_def.members {
-            self.insert_member(
-                *id,
-                CastMember::from(self.number, *id, member_def, &self.lctx, bitmap_manager, self.dir_version, self.palette_id_offset, font_table),
-            );
+        let mut n_applied = 0usize;
+        #[cfg(target_arch = "wasm32")]
+        let mut last_heap = heap_mb();
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut last_heap = 0usize;
+        // Iterate by id and drop each member's parse-time chunk copies as
+        // soon as the member owns its data: the children Vec holds the
+        // BITD/ediM/ALFA chunk structs (a full copy of the member's media)
+        // that CastMember::from has already cloned what it needs from.
+        // Without this the apply phase transiently doubles the cast's media
+        // on top of the parse copies, which is what exceeded the 4 GB wasm
+        // heap on mizube's eleven casts.
+        let mut member_ids: Vec<u32> = cast_def.members.keys().copied().collect();
+        member_ids.sort_unstable();
+        for id in member_ids {
+            let member = if release_per_member {
+                // SAFETY-free equivalent of get_mut through a shared ref:
+                // the release path is invoked with an exclusive borrow in
+                // practice (apply_cast_def_releasing), so re-acquiring via
+                // the same map is sound. To keep the compiler satisfied we
+                // use a raw-pointer dance ONLY on the release branch.
+                let def_ptr = &raw const *cast_def;
+                unsafe {
+                    let def_mut = &mut *def_ptr.cast_mut();
+                    let member_def = def_mut.members.get_mut(&id).unwrap();
+                    let member = CastMember::from(self.number, id, member_def, &self.lctx, bitmap_manager, self.dir_version, self.palette_id_offset, font_table);
+                    member_def.children.clear();
+                    member_def.chunk.specific_data_raw.shrink_to_fit();
+                    member
+                }
+            } else {
+                let member_def = cast_def.members.get(&id).unwrap();
+                CastMember::from(self.number, id, member_def, &self.lctx, bitmap_manager, self.dir_version, self.palette_id_offset, font_table)
+            };
+            self.insert_member(id, member);
+            n_applied += 1;
+            #[cfg(target_arch = "wasm32")]
+            {
+                let mb = heap_mb();
+                if mb > last_heap + 8 {
+                    // A single member costing >8 MB is a decode we
+                    // probably wanted to defer.
+                    let m = self.members.get(&id);
+                    let ty = match m.map(|x| &x.member_type) {
+                        Some(CastMemberType::Bitmap(_)) => "bitmap",
+                        Some(CastMemberType::Field(_)) => "field",
+                        Some(CastMemberType::Text(_)) => "text",
+                        Some(CastMemberType::Sound(_)) => "sound",
+                        Some(CastMemberType::HavokPhysics(_)) => "havok",
+                        Some(CastMemberType::Groove3gm(_)) => "groove3gm",
+                        _ => "other",
+                    };
+                    log::debug!("[heap] member {} (+{} MB) type={} name={:?}", id, mb - last_heap, ty, m.map(|x| x.name.as_str()));
+                }
+                last_heap = mb;
+            }
             JsApi::on_cast_member_name_changed(CastMemberRefHandlers::get_cast_slot_number(
                 self.number,
-                *id,
+                id,
             ));
         }
         JsApi::dispatch_cast_member_list_changed(self.number);
@@ -862,7 +970,7 @@ mod name_index_tests {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn heap_mb() -> usize {
+pub fn heap_mb() -> usize {
     use wasm_bindgen::JsCast;
     let mem = unsafe { wasm_bindgen::memory() };
     let mem: js_sys::WebAssembly::Memory = mem.dyn_into().unwrap();
@@ -870,3 +978,7 @@ fn heap_mb() -> usize {
     let buf: js_sys::ArrayBuffer = buf.dyn_into().unwrap();
     buf.byte_length() as usize / (1024 * 1024)
 }
+
+/// Re-export for sibling modules (cast_member instrumentation).
+#[cfg(target_arch = "wasm32")]
+pub use heap_mb as heap_mb_pub;

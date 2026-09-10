@@ -655,8 +655,8 @@ pub fn host_call_dispatch(op_id: u32, args_bytes: &[u8]) -> Vec<u8> {
                     CastMemberType::Bitmap(b) => b.image_ref,
                     _ => return None,
                 };
-                let bitmap = player.bitmap_manager.get_bitmap(bref)?;
-                Some((bitmap.width as i32, bitmap.height as i32))
+                let meta = player.bitmap_manager.get_bitmap_meta(bref)?;
+                Some((meta.width as i32, meta.height as i32))
             });
             match size {
                 Some((w, h)) => {

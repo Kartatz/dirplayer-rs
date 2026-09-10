@@ -514,9 +514,8 @@ pub async fn run_player_command(command: PlayerVMCommand) -> Result<DatumRef, Sc
                     .find_member_by_ref(&member_ref)
                     .unwrap();
                 let bitmap = member.member_type.as_bitmap().unwrap();
-                let bitmap = player.bitmap_manager.get_bitmap(bitmap.image_ref).unwrap();
-                let bitmap = &bitmap.data;
-                warn!("Bitmap hex: {}", bitmap.to_hex_string());
+                let meta = player.bitmap_manager.get_bitmap_meta(bitmap.image_ref).unwrap();
+                warn!("Bitmap hex: <pending={} {}x{}x{}>", meta.pending, meta.width, meta.height, meta.bit_depth);
             });
         }
         PlayerVMCommand::PlayMemberSound(member_ref) => {

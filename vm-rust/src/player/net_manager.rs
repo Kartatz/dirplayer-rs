@@ -148,6 +148,30 @@ impl NetManager {
         return self.get_task_state(task_id).and_then(|x| x.result);
     }
 
+    /// Drop a completed task's payload. The task entry itself (URL, status)
+    /// is kept — Lingo `netDone`/`netTextResult` queries still work, and the
+    /// bytes were only retained for the consumer that already got them.
+    /// Take a completed task's payload out of the shared state, leaving None
+    /// behind. Avoids the full-file clone `get_task_result` makes — a cast
+    /// preload used to hold task original + cloned result + chunk views +
+    /// chunk structs, i.e. four copies of up to 74 MB at once.
+    pub fn take_task_result(&mut self, task_id: u32) -> Option<NetResult> {
+        if let Some(mut shared_state) = self.shared_state.try_lock() {
+            shared_state
+                .task_states
+                .get_mut(&task_id)
+                .and_then(|x| x.result.take())
+        } else {
+            None
+        }
+    }
+
+    pub fn release_task_result(&mut self, task_id: u32) {
+        if let Some(mut shared_state) = self.shared_state.try_lock() {
+            shared_state.task_states.entry(task_id).and_modify(|x| x.result = None);
+        }
+    }
+
     pub fn get_task(&self, task_id: u32) -> Option<&NetTask> {
         return self.tasks.get(&task_id);
     }

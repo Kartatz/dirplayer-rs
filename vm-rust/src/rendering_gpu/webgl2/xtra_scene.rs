@@ -657,8 +657,8 @@ impl XtraSceneRenderer {
             CastMemberType::Bitmap(b) => b.image_ref,
             _ => return None,
         };
-        let bitmap = player.bitmap_manager.get_bitmap(bref)?;
-        Some((bitmap.width as i32, bitmap.height as i32))
+        let meta = player.bitmap_manager.get_bitmap_meta(bref)?;
+        Some((meta.width as i32, meta.height as i32))
     }
 
     /// Composite the frame's 2D bitmap overlays over the full stage (Groove
@@ -808,7 +808,13 @@ fn resolve_bitmap_rgba(player: &DirPlayer, name: &str) -> Option<(usize, usize, 
         CastMemberType::Bitmap(b) => b.image_ref,
         _ => return None,
     };
-    let bitmap = player.bitmap_manager.get_bitmap(bref)?;
+    // Lazy-decode note: this is the Groove texture path; a pending
+    // (not-yet-rendered) bitmap has no pixels yet, so skip until decoded.
+    let meta = player.bitmap_manager.get_bitmap_meta(bref)?;
+    if meta.pending {
+        return None;
+    }
+    let bitmap = player.bitmap_manager.get_bitmap_static(bref)?;
     let palettes = player.movie.cast_manager.palettes();
     let rgba = super::WebGL2Renderer::bitmap_to_rgba(bitmap, &palettes, 0, None, None, None, (0, 0), false);
     Some((bitmap.width as usize, bitmap.height as usize, rgba))

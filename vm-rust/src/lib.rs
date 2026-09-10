@@ -636,11 +636,11 @@ pub fn player_print_filmloop_sprites(cast_lib: i32, cast_member: i32) {
             let (mname, mtype, bm_info) = match inner {
                 Some(m) => {
                     let info = if let CastMemberType::Bitmap(bm) = &m.member_type {
-                        let bmp = player.bitmap_manager.get_bitmap(bm.image_ref);
+                        let bmp = player.bitmap_manager.get_bitmap_meta(bm.image_ref);
                         match bmp {
-                            Some(b) => format!(" bm={}x{} bd={} obd={} use_alpha={} pal={:?}",
+                            Some(b) => format!(" bm={}x{} bd={} obd={} use_alpha={} pending={}",
                                 b.width, b.height, b.bit_depth, b.original_bit_depth,
-                                b.use_alpha, b.palette_ref),
+                                b.use_alpha, b.pending),
                             None => " bm=<no_data>".into(),
                         }
                     } else {

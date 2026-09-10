@@ -1750,7 +1750,8 @@ impl TextMemberHandlers {
                     let font_bitmap = player
                         .bitmap_manager
                         .get_bitmap(font.bitmap_ref)
-                        .ok_or_else(|| ScriptError::new("Font bitmap not found".to_string()))?;
+                        .ok_or_else(|| ScriptError::new("Font bitmap not found".to_string()))?
+                        .clone();
                     let palettes = player.movie.cast_manager.palettes();
                     let params = CopyPixelsParams {
                         blend: 100,
@@ -1790,7 +1791,7 @@ impl TextMemberHandlers {
                     // in the descent, matching Shockwave. Shared with the on-stage
                     // `Bitmap::draw_text` path so both render identically.
                     let (pfr_cap_top, pfr_desc_bottom) =
-                        crate::player::font::pfr_strike_vertical_metrics(&font, font_bitmap);
+                        crate::player::font::pfr_strike_vertical_metrics(&font, &font_bitmap);
 
                     let max_width = box_width as i32;
                     // Anchor the first line's atlas cell top at box row 0. In Paige
@@ -1856,7 +1857,7 @@ impl TextMemberHandlers {
                         (crate::player::font::outline_auto_line_height_for_font(
                             player, &text_data.font, nominal,
                         ).unwrap_or_else(|| crate::player::font::pfr_auto_line_height(
-                            &font, Some(font_bitmap), nominal,
+                            &font, Some(&font_bitmap), nominal,
                         )) as i32).max(1)
                     };
 
@@ -2054,24 +2055,24 @@ impl TextMemberHandlers {
                             };
                             if use_tight {
                                 bitmap_font_copy_char_tight(
-                                    &font, font_bitmap, crate::io::encoding::glyph_byte_for(ch), bitmap,
+                                    &font, &font_bitmap, crate::io::encoding::glyph_byte_for(ch), bitmap,
                                     x, y_pos, &palettes, &ch_params,
                                 );
                             } else {
                                 bitmap_font_copy_char(
-                                    &font, font_bitmap, crate::io::encoding::glyph_byte_for(ch), bitmap,
+                                    &font, &font_bitmap, crate::io::encoding::glyph_byte_for(ch), bitmap,
                                     x, y_pos, &palettes, &ch_params,
                                 );
                             }
                             if per.bold {
                                 if use_tight {
                                     bitmap_font_copy_char_tight(
-                                        &font, font_bitmap, crate::io::encoding::glyph_byte_for(ch), bitmap,
+                                        &font, &font_bitmap, crate::io::encoding::glyph_byte_for(ch), bitmap,
                                         x + 1, y_pos, &palettes, &ch_params,
                                     );
                                 } else {
                                     bitmap_font_copy_char(
-                                        &font, font_bitmap, crate::io::encoding::glyph_byte_for(ch), bitmap,
+                                        &font, &font_bitmap, crate::io::encoding::glyph_byte_for(ch), bitmap,
                                         x + 1, y_pos, &palettes, &ch_params,
                                     );
                                 }

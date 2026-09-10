@@ -113,10 +113,10 @@ pub fn format_concrete_datum_with_depth(datum: &Datum, player: &DirPlayer, depth
             }
         },
         Datum::BitmapRef(bitmap) => {
-            let bitmap = player.bitmap_manager.get_bitmap(*bitmap).unwrap();
+            let meta = player.bitmap_manager.get_bitmap_meta(*bitmap).unwrap();
             format!(
                 "<bitmap {}x{}x{}>",
-                bitmap.width, bitmap.height, bitmap.bit_depth
+                meta.width, meta.height, meta.bit_depth
             )
         }
         Datum::PaletteRef(palette_ref) => match palette_ref {

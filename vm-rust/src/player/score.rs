@@ -1054,8 +1054,8 @@ impl Score {
                                 sprite.bitmap_size_owned_by_sprite =
                                     sprite.width != bw || sprite.height != bh;
 
-                                // Get the bitmap's palette colors
-                                let bitmap = player.bitmap_manager.get_bitmap(bitmap_member.image_ref);
+                                // Get the bitmap's palette colors (meta only — no decode)
+                                let bitmap = player.bitmap_manager.get_bitmap_meta(bitmap_member.image_ref);
                                 if let Some(bitmap) = bitmap {
                                     use crate::player::bitmap::bitmap::{PaletteRef, BuiltInPalette};
                                     use crate::player::bitmap::palette::{
@@ -2654,8 +2654,8 @@ impl Score {
                             sprite.bitmap_size_owned_by_sprite =
                                 sprite.width != bw || sprite.height != bh;
 
-                            // Get the bitmap's palette colors
-                            let bitmap = player.bitmap_manager.get_bitmap(bitmap_member.image_ref);
+                            // Get the bitmap's palette colors (meta only — no decode)
+                            let bitmap = player.bitmap_manager.get_bitmap_meta(bitmap_member.image_ref);
                             if let Some(bitmap) = bitmap {
                                 use crate::player::bitmap::bitmap::{PaletteRef, BuiltInPalette};
                                 use crate::player::bitmap::palette::{
@@ -5394,7 +5394,16 @@ fn matte_pixel_hit_test(player: &DirPlayer, sprite: &Sprite, rect: &IntRect, hit
         Some(b) => b,
         None => return true,
     };
-    let bitmap = match player.bitmap_manager.get_bitmap(bmp_member.image_ref) {
+    // A lazily-decoded bitmap that has not been rendered yet has no matte:
+    // fall back to bounding-box semantics (treat as hit) until it decodes.
+    let meta = match player.bitmap_manager.get_bitmap_meta(bmp_member.image_ref) {
+        Some(m) => m,
+        None => return true,
+    };
+    if meta.pending {
+        return true;
+    }
+    let bitmap = match player.bitmap_manager.get_bitmap_static(bmp_member.image_ref) {
         Some(b) => b,
         None => return true,
     };
@@ -6042,8 +6051,8 @@ pub fn get_concrete_sprite_rect(player: &DirPlayer, sprite: &Sprite) -> IntRect 
             // real bitmap size, which causes the heuristic to mis-classify the
             // sprite as a bbox and stretch/clip it incorrectly.
             let (bitmap_width, bitmap_height) =
-                if let Some(bmp) = player.bitmap_manager.get_bitmap(bitmap_member.image_ref) {
-                    (bmp.width as i32, bmp.height as i32)
+                if let Some(meta) = player.bitmap_manager.get_bitmap_meta(bitmap_member.image_ref) {
+                    (meta.width as i32, meta.height as i32)
                 } else {
                     (bitmap_member.info.width as i32, bitmap_member.info.height as i32)
                 };
@@ -6810,8 +6819,8 @@ pub fn get_concrete_sprite_rect(player: &DirPlayer, sprite: &Sprite) -> IntRect 
                     .member
                     .as_ref()
                     .and_then(|m| player.nested_movie_images.get(m).copied())
-                    .and_then(|img| player.bitmap_manager.get_bitmap(img))
-                    .map(|b| (b.width as i32, b.height as i32))
+                    .and_then(|img| player.bitmap_manager.get_bitmap_meta(img))
+                    .map(|m| (m.width as i32, m.height as i32))
             });
             // A linked movie plays at its own stage size — it does NOT scale to
             // fill the sprite rect (ignore the score's stretch flag/oversized box).

@@ -177,7 +177,7 @@ pub struct Bitmap {
     pub height: u16,
     pub bit_depth: u8,          // Current storage format
     pub original_bit_depth: u8, // Original format (for palette selection)
-    pub data: Vec<u8>,          // RGBA
+    pub data: Vec<u8>,          // RGBA — empty until a pending source is decoded
     pub palette_ref: PaletteRef,
     pub matte: Option<Arc<BitmapMask>>,
     pub use_alpha: bool,
@@ -185,6 +185,31 @@ pub struct Bitmap {
     pub was_trimmed: bool,
     /// Version counter for cache invalidation (incremented when bitmap data changes)
     pub version: u32,
+    /// Undecoded source. Cast-member bitmaps register with this set so
+    /// preload does not materialise a width x height x 4 plane per member
+    /// (the mizube combined project's casts decode to ~4 GB across ~3000
+    /// members). The BitmapManager decodes it on first get_bitmap() use
+    /// and drops the encoded bytes, leaving only the plane.
+    pub pending: Option<Box<PendingBitmap>>,
+}
+
+/// Encoded source for a lazily-decoded cast-member bitmap.
+#[derive(Clone)]
+pub enum PendingBitmap {
+    /// Raw BITD bytes (PackBits/RLE/JPEG-with-appended-alpha variants
+    /// handled by decompress_bitmap).
+    Bitd {
+        data: Vec<u8>,
+        info: BitmapInfo,
+        cast_lib: u32,
+        version: u16,
+    },
+    /// ediM JPEG body plus the separate ALFA alpha mask.
+    JpegWithAlfa {
+        jpeg: Vec<u8>,
+        alfa: Vec<u8>,
+        info: BitmapInfo,
+    },
 }
 
 impl Bitmap {
@@ -276,7 +301,35 @@ impl Bitmap {
             trim_white_space: false,
             was_trimmed: false,
             version: 0,
+            pending: None,
         }
+    }
+
+    /// A lazily-decoded cast-member bitmap: header fields are set from
+    /// `info` (so dimension reads work without decoding) but `data` stays
+    /// empty and the encoded source is retained until first use.
+    pub fn new_pending(info: &BitmapInfo, pending: PendingBitmap) -> Self {
+        // Build the header WITHOUT allocating the pixel plane: Bitmap::new
+        // would eagerly allocate width x height x 4 bytes, which is exactly
+        // the allocation this lazy path exists to avoid (every cast member
+        // of every castLib, ~3000 members on cast-heavy movies). Construct a
+        // 1x1 shell, then set the real dimensions and leave `data` empty
+        // until the manager decodes on first use.
+        let mut out = Bitmap::new(
+            1,
+            1,
+            info.bit_depth,
+            info.bit_depth,
+            0,
+            PaletteRef::BuiltIn(BuiltInPalette::SystemWin),
+        );
+        out.width = info.width;
+        out.height = info.height;
+        out.data = Vec::new();
+        out.trim_white_space = info.trim_white_space;
+        out.use_alpha = info.use_alpha;
+        out.pending = Some(Box::new(pending));
+        out
     }
 
     /// Increment the version counter to indicate the bitmap data has changed.
@@ -359,6 +412,7 @@ fn decode_bitmap_1bit(
         trim_white_space: false,
         was_trimmed: false,
         version: 0,
+        pending: None,
     })
 }
 
@@ -418,6 +472,7 @@ fn decode_bitmap_2bit(
         trim_white_space: false,
         was_trimmed: false,
         version: 0,
+        pending: None,
     })
 }
 
@@ -476,6 +531,7 @@ fn decode_bitmap_4bit(
         trim_white_space: false,
         was_trimmed: false,
         version: 0,
+        pending: None,
     })
 }
 
@@ -543,6 +599,7 @@ fn decode_bitmap_16bit(
         trim_white_space: false,
         was_trimmed: false,
         version: 0,
+        pending: None,
     })
 }
 
@@ -644,6 +701,7 @@ fn decode_generic_bitmap(
             trim_white_space: false,
             was_trimmed: false,
             version: 0,
+            pending: None,
         });
     }
 }
@@ -887,6 +945,7 @@ pub fn decompress_bitmap(
                     trim_white_space: info.trim_white_space,
                     was_trimmed: false,
                     version: 0,
+                    pending: None,
                 })
             } else {
                 // D4+ format: each scanline has channels laid out as A R G B sequentially
@@ -937,6 +996,7 @@ pub fn decompress_bitmap(
                     trim_white_space: info.trim_white_space,
                     was_trimmed: false,
                     version: 0,
+                    pending: None,
                 })
             }
         }
@@ -1606,6 +1666,7 @@ fn decode_jpeg_bitd(data: &[u8], info: &BitmapInfo, cast_lib: u32) -> Result<Bit
         trim_white_space: info.trim_white_space,
         was_trimmed: false,
         version: 0,
+        pending: None,
     })
 }
 
@@ -1688,6 +1749,7 @@ pub fn decode_jpeg_bitmap(data: &[u8], info: &BitmapInfo, alfa_data: Option<&Vec
         trim_white_space: info.trim_white_space,
         was_trimmed: false,
         version: 0,
+        pending: None,
     })
 }
 

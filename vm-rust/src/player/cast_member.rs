@@ -9,7 +9,7 @@ use crate::{CastMemberRef, player::symbols::{builtin::BuiltInSymbol, symbol::Sym
 
 use super::{
     bitmap::{
-        bitmap::{decode_jpeg_bitmap, decompress_alpha_rle, decompress_bitmap, Bitmap, BuiltInPalette, PaletteRef},
+        bitmap::{decode_jpeg_bitmap, decompress_alpha_rle, decompress_bitmap, Bitmap, BuiltInPalette, PaletteRef, PendingBitmap},
         manager::{BitmapManager, BitmapRef},
     },
     score::Score,
@@ -3621,40 +3621,28 @@ impl CastMember {
                 })
             });
 
+            // Lazy decode: register the encoded source; the BitmapManager
+            // materialises the RGBA plane on first use. Eager decoding here
+            // allocated width x height x 4 for every member of every cast at
+            // preload time — ~4 GB across the mizube combined project.
+            let _ = number;
             if is_jpeg && alfa_data.is_some() {
-                // JPEG in BITD + separate ALFA chunk: use decode_jpeg_bitmap which
-                // correctly combines JPEG RGB with ALFA alpha channel.
-                // decode_jpeg_bitd only looks for alpha AFTER FFD9 inside the BITD data,
-                // missing the separate ALFA chunk entirely.
-                match decode_jpeg_bitmap(&bitd_chunk.data, bitmap_info, alfa_data) {
-                    Ok(new_bitmap) => bitmap_manager.add_bitmap(new_bitmap),
-                    Err(e) => {
-                        warn!(
-                            "Failed to decode JPEG+ALFA bitmap {}: {:?}. Using empty image.",
-                            number, e
-                        );
-                        bitmap_manager.add_bitmap(Bitmap::new(
-                            1, 1, 8, 8, 0,
-                            PaletteRef::BuiltIn(BuiltInPalette::GrayScale),
-                        ))
-                    }
-                }
+                // JPEG in BITD + separate ALFA chunk: decode_jpeg_bitmap
+                // combines JPEG RGB with the ALFA alpha channel at decode
+                // time (decode_jpeg_bitd only looks for alpha AFTER FFD9
+                // inside the BITD data, missing the separate ALFA chunk).
+                bitmap_manager.add_bitmap(Bitmap::new_pending(bitmap_info, PendingBitmap::JpegWithAlfa {
+                    jpeg: bitd_chunk.data.clone(),
+                    alfa: alfa_data.unwrap().clone(),
+                    info: bitmap_info.clone(),
+                }))
             } else {
-                let decompressed =
-                    decompress_bitmap(&bitd_chunk.data, bitmap_info, cast_lib, bitd_chunk.version);
-                match decompressed {
-                    Ok(new_bitmap) => bitmap_manager.add_bitmap(new_bitmap),
-                    Err(e) => {
-                        warn!(
-                            "Failed to decompress bitmap {}: {:?}. Using empty image.",
-                            number, e
-                        );
-                        bitmap_manager.add_bitmap(Bitmap::new(
-                            1, 1, 8, 8, 0,
-                            PaletteRef::BuiltIn(BuiltInPalette::GrayScale),
-                        ))
-                    }
-                }
+                bitmap_manager.add_bitmap(Bitmap::new_pending(bitmap_info, PendingBitmap::Bitd {
+                    data: bitd_chunk.data.clone(),
+                    info: bitmap_info.clone(),
+                    cast_lib,
+                    version: bitd_chunk.version,
+                }))
             }
         } else {
             // Some 32-bit members store the colour image as a JPEG in an `ediM`
@@ -3680,15 +3668,13 @@ impl CastMember {
                         _ => None,
                     })
                 });
-                return match decode_jpeg_bitmap(jpeg, bitmap_info, alfa) {
-                    Ok(new_bitmap) => bitmap_manager.add_bitmap(new_bitmap),
-                    Err(e) => {
-                        warn!("Failed to decode ediM JPEG bitmap {}: {:?}. Using empty image.", number, e);
-                        bitmap_manager.add_bitmap(Bitmap::new(
-                            1, 1, 8, 8, 0, PaletteRef::BuiltIn(BuiltInPalette::GrayScale),
-                        ))
-                    }
-                };
+                let _ = number;
+                // Lazy: same pending path as BITD JPEG+ALFA.
+                return bitmap_manager.add_bitmap(Bitmap::new_pending(bitmap_info, PendingBitmap::JpegWithAlfa {
+                    jpeg: jpeg.clone(),
+                    alfa: alfa.map(|v| v.clone()).unwrap_or_default(),
+                    info: bitmap_info.clone(),
+                }));
             }
 
             // A 32-bit alpha+JPEG member whose ediM (colour) chunk is unresolvable —
@@ -3724,6 +3710,7 @@ impl CastMember {
                         trim_white_space: bitmap_info.trim_white_space,
                         was_trimmed: false,
                         version: 0,
+                        pending: None,
                     });
                 }
             }
@@ -6260,6 +6247,8 @@ impl CastMember {
                 CastMemberType::Movie(mv)
             }
             MemberType::Sound => {
+                #[cfg(target_arch = "wasm32")]
+                { log::debug!("[heap] sound member {} apply start: {} MB", number, crate::player::cast_lib::heap_mb_pub()); }
                 // Log children
                 if !member_def.children.is_empty() {
                     debug!(
@@ -6296,7 +6285,7 @@ impl CastMember {
                 .filter_map(|c_opt| c_opt.as_ref())
                 .find_map(|chunk| match chunk {
                     Chunk::Sound(s) => {
-                    debug!("Found Sound chunk with {} bytes", s.data().len());
+                    log::debug!("[heap] sound: Sound chunk with {} bytes", s.data().len());
                     Some(s.clone())
                     },
                     Chunk::Media(m) => {
@@ -6307,12 +6296,11 @@ impl CastMember {
                     // Check if the Media chunk has any sound data
                     // Don't just check is_empty - also check data_size_field
                     if !m.audio_data.is_empty() || m.data_size_field > 0 {
+                        #[cfg(target_arch = "wasm32")]
+                        { log::debug!("[heap] sound: from_media in: audio={} bytes size_field={}", m.audio_data.len(), m.data_size_field); }
                         let sound = SoundChunk::from_media(&m);
-                        debug!(
-                        "Created SoundChunk from Media: {} bytes, rate={}",
-                        sound.data().len(),
-                        sound.sample_rate()
-                        );
+                        #[cfg(target_arch = "wasm32")]
+                        { log::debug!("[heap] sound: from_media out: {} bytes rate={}", sound.data().len(), sound.sample_rate()); }
                         Some(sound)
                     } else {
                         debug!("Media chunk has no audio data");
@@ -6363,6 +6351,8 @@ impl CastMember {
                 );
 
                 // Construct SoundMember
+                #[cfg(target_arch = "wasm32")]
+                { log::debug!("[heap] sound member {} chunk-found", number); }
                 if let Some(sound_chunk) = sound_chunk_opt {
                     let info = SoundInfo {
                         sample_rate: sound_chunk.sample_rate(),
@@ -6393,6 +6383,8 @@ impl CastMember {
                         info.duration
                     );
 
+                    #[cfg(target_arch = "wasm32")]
+                    { log::debug!("[heap] sound member {} SoundMember constructed", number); }
                     CastMemberType::Sound(SoundMember {
                         info,
                         sound: sound_chunk,
@@ -6552,6 +6544,7 @@ impl CastMember {
                         trim_white_space: false,
                         was_trimmed: false,
                         version: 0,
+                        pending: None,
                     };
                     let image_ref = bitmap_manager.add_bitmap(bitmap);
                     let info = crate::director::enums::BitmapInfo {

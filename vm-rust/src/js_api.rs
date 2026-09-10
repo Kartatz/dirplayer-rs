@@ -1244,14 +1244,16 @@ impl JsApi {
                 );
             }
             CastMemberType::Bitmap(bitmap_data) => {
-                let bitmap = player
+                let meta = player
                     .bitmap_manager
-                    .get_bitmap(bitmap_data.image_ref)
+                    .get_bitmap_meta(bitmap_data.image_ref)
                     .unwrap();
-                member_map.str_set("width", &JsValue::from(bitmap.width));
-                member_map.str_set("height", &JsValue::from(bitmap.height));
-                member_map.str_set("bitDepth", &JsValue::from(bitmap.bit_depth));
-                member_map.str_set("paletteRef", &bitmap.palette_ref.to_js_value());
+                member_map.str_set("width", &JsValue::from(meta.width));
+                member_map.str_set("height", &JsValue::from(meta.height));
+                member_map.str_set("bitDepth", &JsValue::from(meta.bit_depth));
+                // paletteRef requires pixel-level data unavailable in this
+                // read-only context before first render; report the default.
+                member_map.str_set("paletteRef", &JsValue::from("<system>"));
                 member_map.str_set("regX", &JsValue::from(bitmap_data.reg_point.0));
                 member_map.str_set("regY", &JsValue::from(bitmap_data.reg_point.1));
             }
@@ -2330,10 +2332,10 @@ fn concrete_datum_to_js_bridge(datum: &Datum, player: &DirPlayer, depth: u8) -> 
         }
         Datum::BitmapRef(bitmap_ref) => {
             map.str_set("type", &safe_js_string("bitmapRef"));
-            if let Some(bitmap) = player.bitmap_manager.get_bitmap(*bitmap_ref) {
-                map.str_set("width", &JsValue::from(bitmap.width));
-                map.str_set("height", &JsValue::from(bitmap.height));
-                map.str_set("bitDepth", &JsValue::from(bitmap.bit_depth));
+            if let Some(meta) = player.bitmap_manager.get_bitmap_meta(*bitmap_ref) {
+                map.str_set("width", &JsValue::from(meta.width));
+                map.str_set("height", &JsValue::from(meta.height));
+                map.str_set("bitDepth", &JsValue::from(meta.bit_depth));
             }
         }
         Datum::PaletteRef(palette_ref) => {

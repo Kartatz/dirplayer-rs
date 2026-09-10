@@ -24,14 +24,14 @@ fn get_sprite_image_ref(player: &DirPlayer, sprite_num: i16) -> Option<(BitmapRe
         .sprite.member.as_ref()?.clone();
     let member = player.movie.cast_manager.find_member_by_ref(&member_ref)?;
     let bmp = member.member_type.as_bitmap()?;
-    let bitmap = player.bitmap_manager.get_bitmap(bmp.image_ref)?;
-    Some((bmp.image_ref, bitmap.width, bitmap.height))
+    let meta = player.bitmap_manager.get_bitmap_meta(bmp.image_ref)?;
+    Some((bmp.image_ref, meta.width, meta.height))
 }
 
 /// Check pixel-level collision between two sprites using their bitmap mattes.
 /// Only called when AABB already overlaps and at least one sprite has matte ink.
 fn check_matte_pixel_overlap(
-    player: &DirPlayer,
+    player: &mut DirPlayer,
     src_num: i16,
     tgt_num: i16,
     src_rect: (i32, i32, i32, i32),
@@ -50,7 +50,7 @@ fn check_matte_pixel_overlap(
     }
 
     // Helper: get the matte Arc for a sprite's bitmap
-    let get_matte = |sprite_num: i16| -> Option<(Arc<BitmapMask>, u16, u16)> {
+    let mut get_matte = |sprite_num: i16| -> Option<(Arc<BitmapMask>, u16, u16)> {
         let member_ref = player.movie.score.get_channel(sprite_num)
             .sprite.member.as_ref()?.clone();
         let member = player.movie.cast_manager.find_member_by_ref(&member_ref)?;
@@ -244,6 +244,7 @@ impl SpriteCompareBytecodeHandler {
                     // Ensure mattes are computed for the matte-ink sprites
                     if is_matte_ink(src_ink) {
                         if let Some((image_ref, _, _)) = get_sprite_image_ref(player, source_sprite_num) {
+                            let _ = player.bitmap_manager.get_bitmap(image_ref); // decode if pending
                             let palettes = player.movie.cast_manager.palettes();
                             if let Some(bmp) = player.bitmap_manager.get_bitmap_mut(image_ref) {
                                 if bmp.matte.is_none() {
@@ -254,6 +255,7 @@ impl SpriteCompareBytecodeHandler {
                     }
                     if is_matte_ink(tgt_ink) {
                         if let Some((image_ref, _, _)) = get_sprite_image_ref(player, target_sprite_num) {
+                            let _ = player.bitmap_manager.get_bitmap(image_ref); // decode if pending
                             let palettes = player.movie.cast_manager.palettes();
                             if let Some(bmp) = player.bitmap_manager.get_bitmap_mut(image_ref) {
                                 if bmp.matte.is_none() {
