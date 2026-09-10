@@ -4600,18 +4600,25 @@ impl CastMember {
             };
             let is_text_ole = ole_type.is_empty() || ole_type == "text";
             if is_text_ole {
-                let hex_dump = xm.raw_data.clone()
-                    .iter()
-                    .map(|b| format!("{:02X} ", b))
-                    .collect::<Vec<String>>()
-                    .join(" ");
-                debug!(
-                    "XMED X2 (text member #{} '{}', {} bytes):\n{}",
-                    number,
-                    chunk.member_info.as_ref().map(|x| x.name.as_str()).unwrap_or(""),
-                    xm.raw_data.len(),
-                    hex_dump
-                );
+                // The full hex dump is only materialised when debug logging is
+                // actually enabled: building it eagerly (a 3-char String per
+                // raw byte, then a Vec + join) costs ~10x the member size and
+                // exhausted the WASM heap on cast-heavy movies (mizube's
+                // system.cct text members).
+                if log::log_enabled!(log::Level::Debug) {
+                    let hex_dump = xm.raw_data
+                        .iter()
+                        .map(|b| format!("{:02X} ", b))
+                        .collect::<Vec<String>>()
+                        .join(" ");
+                    debug!(
+                        "XMED X2 (text member #{} '{}', {} bytes):\n{}",
+                        number,
+                        chunk.member_info.as_ref().map(|x| x.name.as_str()).unwrap_or(""),
+                        xm.raw_data.len(),
+                        hex_dump
+                    );
+                }
 
                 if let Some(styled_text) = xm.parse_styled_text() {
                     debug!("Detected as XMED styled text");

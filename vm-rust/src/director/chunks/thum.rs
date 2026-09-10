@@ -20,6 +20,7 @@ impl ThumChunk {
             raw_data.len(),
             raw_data
                 .iter()
+                    .take(256)
                     .map(|b| format!("{:02X}", b))
                     .collect::<Vec<String>>()
                     .join(" ")

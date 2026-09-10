@@ -21,17 +21,19 @@ impl MediaChunk {
             data_test.push(byte);
         }
 
-        let hex_dump = data_test
-            .iter()
-            .map(|b| format!("{:02X} ", b))
-            .collect::<Vec<String>>()
-            .join(" ");
-
-        debug!(
-            "WAV Hex Dump (Full File, {} bytes):\n{}",
-            data_test.len(),
-            hex_dump
-        );
+        if log::log_enabled!(log::Level::Debug) {
+            let hex_dump = data_test
+                .iter()
+                .take(256)
+                .map(|b| format!("{:02X} ", b))
+                .collect::<Vec<String>>()
+                .join(" ");
+            debug!(
+                "WAV/media data ({} bytes, first 256):\n{}",
+                data_test.len(),
+                hex_dump
+            );
+        }
 
         reader.pos = r_begin;
 
