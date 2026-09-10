@@ -659,10 +659,17 @@ pub fn get_script_context_key_entry_for_cast<'a>(
     _rifx: &RIFXReaderContext,
     cast_id: u32,
 ) -> Option<&'a KeyTableEntry> {
-    return key_table.entries.iter().find(|entry| {
-        entry.cast_id == cast_id
-            && (entry.fourcc == FOURCC("Lctx") || entry.fourcc == FOURCC("LctX"))
-    });
+    // Indexed by cast_id (see KeyTableChunk::by_cast_id); the Lctx/LctX
+    // filter then only scans that one cast's children.
+    let entry = key_table
+        .by_cast_id
+        .get(&cast_id)
+        .and_then(|idx| {
+            idx.iter()
+                .map(|&i| &key_table.entries[i])
+                .find(|entry| entry.fourcc == FOURCC("Lctx") || entry.fourcc == FOURCC("LctX"))
+        });
+    return entry;
 }
 
 pub fn get_script_context_chunk(
@@ -1341,8 +1348,13 @@ pub fn get_children_of_chunk<'a>(
     chunk_id: &u32,
     key_table: &'a KeyTableChunk,
 ) -> Vec<&'a KeyTableEntry> {
-    let associations = key_table.entries.iter().filter(|x| x.cast_id == *chunk_id);
-    return associations.collect_vec();
+    // Indexed lookup: see KeyTableChunk::by_cast_id.
+    return key_table
+        .by_cast_id
+        .get(chunk_id)
+        .map_or_else(Vec::new, |idx| {
+            idx.iter().map(|&i| &key_table.entries[i]).collect_vec()
+        });
 }
 
 fn compression_implemented(compression_id: &MoaID) -> bool {

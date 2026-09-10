@@ -28,6 +28,12 @@ pub struct KeyTableChunk {
     pub entry_count: u32,
     pub used_count: u32,
     pub entries: Vec<KeyTableEntry>,
+    /// Entry indices grouped by owning chunk (cast_id), so media lookups
+    /// don't linearly rescan the whole table for every cast member.
+    /// Large afterburned shared casts (the mizube project's system.cct)
+    /// carry ~234k KEY* entries; a per-member scan is O(members x entries)
+    /// and exhausts the WASM heap with temporary Vec allocations.
+    pub by_cast_id: std::collections::HashMap<u32, Vec<usize>>,
 }
 
 impl KeyTableChunk {
@@ -40,17 +46,26 @@ impl KeyTableChunk {
         let entry_count = reader.read_u32().unwrap();
         let used_count = reader.read_u32().unwrap();
 
+        let entries: Vec<KeyTableEntry> = {
+            let all_entries: Vec<KeyTableEntry> = (0..entry_count)
+                .map(|_| KeyTableEntry::from_reader(reader, dir_version).unwrap())
+                .collect();
+            all_entries.into_iter().filter(|e| e.section_id > 0).collect()
+        };
+
+        let mut by_cast_id: std::collections::HashMap<u32, Vec<usize>> =
+            std::collections::HashMap::with_capacity(entries.len());
+        for (i, e) in entries.iter().enumerate() {
+            by_cast_id.entry(e.cast_id).or_default().push(i);
+        }
+
         return Ok(KeyTableChunk {
             entry_size: entry_size,
             entry_size2: entry_size2,
             entry_count: entry_count,
             used_count: used_count,
-            entries: {
-                let all_entries: Vec<KeyTableEntry> = (0..entry_count)
-                    .map(|_| KeyTableEntry::from_reader(reader, dir_version).unwrap())
-                    .collect();
-                all_entries.into_iter().filter(|e| e.section_id > 0).collect()
-            },
+            entries,
+            by_cast_id,
         });
     }
 }
