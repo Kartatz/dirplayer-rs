@@ -150,8 +150,13 @@ impl CastLib {
         bitmap_manager: &mut BitmapManager,
         dir_cache: &mut HashMap<Box<str>, DirectorFile>,
     ) {
+    #[cfg(target_arch = "wasm32")]
+    { let mb = heap_mb(); log::error!("[heap] on_cast_preload_result start: {} MB", mb); }
+
         let load_file_name = resolved_url.as_str();
         if let Ok(cast_bytes) = result {
+            #[cfg(target_arch = "wasm32")]
+            { let mb = heap_mb(); log::error!("[heap] cast '{}' bytes={} heap={} MB (before read)", load_file_name, cast_bytes.len(), mb); }
             let cast_file = read_director_file_bytes(
                 cast_bytes,
                 &resolved_url.to_string(),
@@ -854,4 +859,14 @@ mod name_index_tests {
         cast.invalidate_name_index();
         assert!(cast.find_member_by_name("beta").is_none());
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn heap_mb() -> usize {
+    use wasm_bindgen::JsCast;
+    let mem = unsafe { wasm_bindgen::memory() };
+    let mem: js_sys::WebAssembly::Memory = mem.dyn_into().unwrap();
+    let buf = mem.buffer();
+    let buf: js_sys::ArrayBuffer = buf.dyn_into().unwrap();
+    buf.byte_length() as usize / (1024 * 1024)
 }
