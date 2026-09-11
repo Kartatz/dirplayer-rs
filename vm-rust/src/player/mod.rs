@@ -7318,7 +7318,22 @@ pub fn player_semaphone() -> &'static Mutex<()> {
 // }
 
 pub fn init_player() {
-    console_log::init_with_level(log::Level::Error).unwrap_or(());
+    // Debug log level selectable at runtime via the page: setting
+    // window.__dirplayerLogLevel = 'debug' | 'info' BEFORE the movie loads
+    // switches the wasm logger filter (default Error).
+    #[cfg(target_arch = "wasm32")]
+    {
+        let want_debug = web_sys::window()
+            .and_then(|w| js_sys::Reflect::get(&w, &"__dirplayerLogLevel".into()).ok())
+            .map(|v| v.as_string().unwrap_or_default())
+            .map_or(false, |s| s == "debug" || s == "info");
+        let level = if want_debug { log::Level::Debug } else { log::Level::Error };
+        console_log::init_with_level(level).unwrap_or(());
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        console_log::init_with_level(log::Level::Error).unwrap_or(());
+    }
     let (tx, rx) = channel::unbounded();
     let (event_tx, event_rx) = channel::unbounded();
     unsafe {

@@ -193,7 +193,12 @@ impl CastManager {
         for cast in &self.casts {
             for member in cast.members.values() {
                 if let CastMemberType::Bitmap(bm) = &member.member_type {
-                    if let Some(bitmap) = bitmap_manager.get_bitmap(bm.image_ref) {
+                    // Meta only — decoding every lazily-registered bitmap here
+                    // would materialise every plane in every castLib at movie
+                    // start (the exact allocation the lazy path exists to
+                    // avoid). Pending shells carry a BuiltIn palette_ref, so
+                    // they have no Member refs and are skipped naturally.
+                    if let Some(bitmap) = bitmap_manager.get_bitmap_meta(bm.image_ref) {
                         if let PaletteRef::Member(ref member_ref) = bitmap.palette_ref {
                             let target_member = member_ref.cast_member;
                             let current_cast_lib = member_ref.cast_lib;

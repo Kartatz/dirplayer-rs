@@ -115,6 +115,7 @@ export function initVmCallbacks() {
       store.dispatch(castMemberChanged({ memberRef, snapshot }))
     },
     onFrameChanged: (frame: number) => {
+      (window as any).__dirplayerFrame = frame;
       store.dispatch(frameChanged(frame))
     },
     onScoreChanged: (snapshot: ScoreSnapshot) => {
