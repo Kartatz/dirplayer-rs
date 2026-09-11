@@ -122,6 +122,21 @@ pub async fn load_movie_file(path: String, autoplay: bool) {
 // Player control commands bypass the command queue to allow stopping/resetting
 // while a breakpoint is active.
 
+/// Debug probe: (is_playing, is_script_paused, current_frame, next_frame).
+/// Lets headless hosts watch whether the frame loop is actually running.
+#[wasm_bindgen(js_name = "dirplayer_playbackState")]
+pub fn dirplayer_playback_state() -> js_sys::Array {
+    let out = js_sys::Array::new();
+    reserve_player_ref(|player| {
+        out.push(&wasm_bindgen::JsValue::from_bool(player.is_playing));
+        out.push(&wasm_bindgen::JsValue::from_bool(player.is_script_paused));
+        out.push(&wasm_bindgen::JsValue::from_f64(player.movie.current_frame as f64));
+        out.push(&wasm_bindgen::JsValue::from_bool(player.next_frame.is_some()));
+        out.push(&wasm_bindgen::JsValue::from_f64(player.next_frame.unwrap_or(0) as f64));
+    });
+    out
+}
+
 #[wasm_bindgen]
 pub fn play() {
     reserve_player_mut(|player| {
