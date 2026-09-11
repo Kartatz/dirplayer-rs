@@ -169,6 +169,33 @@ impl CastManager {
             casts.push(cast);
         }
         self.casts = casts;
+        // The movie's own (internal) casts: apply their parse-time member
+        // defs now. Only the lctx (scripts) got connected when the shells
+        // were built — the member map stayed empty, so `member(N, 1)`
+        // resolved to #empty and internal-cast sprites rendered nothing
+        // while their scripts kept working (mizube's dialogue field
+        // "main": movie-internal member 11, sprite 138). External casts
+        // are applied later by their own preload result handler.
+        for index in 0..dir.cast_entries.len() {
+            let cast_entry = &dir.cast_entries[index];
+            if !cast_entry.file_path.is_empty() {
+                continue; // external: applied by its preload handler
+            }
+            let cast_def = match dir.casts.iter().find(|cast| cast.id == cast_entry.id) {
+                Some(def) => def,
+                None => continue,
+            };
+            let font_table = dir.font_table.clone();
+            let raw_slab = dir.raw_slab.clone();
+            let member_count = cast_def.members.len();
+            if let Some(cast) = self.casts.get_mut(index) {
+                log::debug!(
+                    "Applying internal cast def to castLib {} ('{}'): {} members",
+                    cast.number, cast.name, member_count
+                );
+                cast.apply_cast_def_keep(cast_def, bitmap_manager, &font_table, raw_slab.as_ref());
+            }
+        }
         self.invalidate_member_name_cache();
         self.preload_casts(
             CastPreloadReason::MovieLoaded,
