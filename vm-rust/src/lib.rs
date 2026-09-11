@@ -133,6 +133,11 @@ pub fn dirplayer_playback_state() -> js_sys::Array {
         out.push(&wasm_bindgen::JsValue::from_f64(player.movie.current_frame as f64));
         out.push(&wasm_bindgen::JsValue::from_bool(player.next_frame.is_some()));
         out.push(&wasm_bindgen::JsValue::from_f64(player.next_frame.unwrap_or(0) as f64));
+        out.push(&wasm_bindgen::JsValue::from_bool(player.go_same_frame));
+        out.push(&wasm_bindgen::JsValue::from_bool(player.score_transition_active));
+        out.push(&wasm_bindgen::JsValue::from_bool(player.movie.update_lock));
+        out.push(&wasm_bindgen::JsValue::from_f64(player.current_frame_tempo as f64));
+        out.push(&wasm_bindgen::JsValue::from_bool(player.has_frame_changed_in_go));
     });
     out
 }
