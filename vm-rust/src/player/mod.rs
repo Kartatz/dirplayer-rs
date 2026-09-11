@@ -4232,6 +4232,38 @@ pub async fn player_call_global_handler(
     if xtra::manager::has_xtra_static_async_handler(handler_name.into()) {
         return xtra::manager::call_xtra_static_async_handler(handler_name.into(), args).await;
     }
+    // Global-verb form of an async Xtra INSTANCE handler, e.g. Director's
+    // old `openFile instance, path, mode` syntax. The sync fallback inside
+    // BuiltInHandlerManager::call_handler forwards instance receivers to
+    // call_xtra_instance_handler, which errors for async-only verbs — the
+    // script error then trips the debugger pause and freezes the movie
+    // (mizube's boot script opens its save file this way).
+    if !args.is_empty() {
+        let async_instance = reserve_player_ref(|player| {
+            if let Ok((xtra_name, instance_id)) = player.get_datum(&args[0]).to_xtra_instance() {
+                if xtra::manager::has_xtra_instance_async_handler(
+                    &xtra_name,
+                    &handler_name.to_string(),
+                    *instance_id,
+                ) {
+                    Some((xtra_name.to_owned(), *instance_id))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        });
+        if let Some((xtra_name, instance_id)) = async_instance {
+            return xtra::manager::call_xtra_instance_async_handler(
+                &xtra_name,
+                instance_id,
+                &handler_name.to_string(),
+                &args[1..].to_vec(),
+            )
+            .await;
+        }
+    }
     BuiltInHandlerManager::call_handler(handler_name, args)
 }
 

@@ -4243,6 +4243,25 @@ async fn run_draw_loop() {
             }
         };
         let mut player = player;
+        // Debug probe: record why this rAF tick did or didn't draw, so
+        // headless hosts can diagnose a black stage.
+        #[cfg(target_arch = "wasm32")]
+        {
+            use wasm_bindgen::prelude::*;
+            if let Some(w) = web_sys::window() {
+                let obj = js_sys::Object::new();
+                let set = |k: &str, v: wasm_bindgen::JsValue| {
+                    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str(k), &v);
+                };
+                set("playing", JsValue::from_bool(player.is_playing));
+                set("paused", JsValue::from_bool(player.is_script_paused));
+                set("dirty", JsValue::from_bool(player.stage_dirty));
+                set("frame", JsValue::from_f64(player.movie.current_frame as f64));
+                set("drawHold", JsValue::from_bool(player.draw_hold_since_ms.is_some()));
+                set("renderer", JsValue::from_bool(RENDERER_LOCK.with(|r| r.borrow().is_some())));
+                let _ = js_sys::Reflect::set(&w, &JsValue::from_str("__dirplayerDrawProbe"), &obj);
+            }
+        }
         // Pace the stage redraw to the MOVIE'S OWN TEMPO rather than a fixed
         // rate. This used to be a hardcoded 24, so a movie authored above that
         // — HavocCarDemo runs at 60 — advanced its playhead at full speed while
