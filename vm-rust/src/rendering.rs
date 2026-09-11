@@ -1988,6 +1988,29 @@ pub fn render_score_to_bitmap_with_offset(
         }
         let member = member.unwrap();
 
+        // Lazy GIF: cast preload registered this member's animated payload
+        // without decoding it (every GIF frame of every castLib decoding at
+        // preload held ~1 GB on combined-project movies). This is the first
+        // time the member is actually drawn, so decode now — the member's
+        // image_ref swaps to the real first frame and the animation ticks.
+        if let CastMemberType::Bitmap(b) = &member.member_type {
+            if let Some(data) = b.pending_gif.as_ref() {
+                let data = data.clone();
+                crate::player::gif::ensure_gif_decoded(
+                    player,
+                    member_ref.cast_lib as u32,
+                    member_ref.cast_member as u32,
+                    &data,
+                );
+                continue; // re-resolve the member below with its real image_ref
+            }
+        }
+        let member = player.movie.cast_manager.find_member_by_ref(&member_ref);
+        if member.is_none() {
+            continue;
+        }
+        let member = member.unwrap();
+
         // Debug: log each channel being rendered on stage
         if matches!(score_source, ScoreRef::Stage) {
             debug!(

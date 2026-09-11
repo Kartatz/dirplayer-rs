@@ -763,6 +763,12 @@ pub struct BitmapMember {
     pub script_id: u32,
     pub member_script_ref: Option<CastMemberRef>,
     pub info: BitmapInfo,
+    /// Undecoded animated-GIF payload. Set at cast apply; the first render
+    /// (or Lingo probe) that touches this member decodes the frames,
+    /// registers the animation and points `image_ref` at frame 0. Without
+    /// this the whole frame set of every GIF in every castLib decoded at
+    /// preload (mizube's wrong-game casts hold ~1 GB of decoded GIF).
+    pub pending_gif: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug)]
@@ -4540,37 +4546,33 @@ impl CastMember {
             // `player.gif_animations` swaps the frame as time passes. Without
             // this the payload fell through to the text parser below.
             if crate::player::gif::is_gif(&xm.raw_data) {
-                if let Some(anim) = crate::player::gif::decode_gif(&xm.raw_data, bitmap_manager) {
-                    debug!(
-                        "GIF member #{} '{}': {} frames, {}x{}",
-                        number,
-                        chunk.member_info.as_ref().map(|x| x.name.as_str()).unwrap_or(""),
-                        anim.frames.len(), anim.width, anim.height
-                    );
-                    let info = crate::player::gif::gif_bitmap_info(anim.width, anim.height);
-                    let first = anim.frames[0];
-                    // Carry the GIF's own background colour so a sprite drawn
-                    // with ink 36 keys out the right thing.
-                    let bg = crate::player::gif::background_color(&xm.raw_data)
-                        .map(|(r, g, b)| ColorRef::Rgb(r, g, b))
-                        .unwrap_or(ColorRef::PaletteIndex(0));
-                    crate::player::gif::register_pending(cast_lib, number, anim);
-                    return Some(CastMember {
-                        number,
-                        name: chunk.member_info.as_ref().map(|x| x.name.to_owned()).unwrap_or_default(),
-                        comments: chunk.member_info.as_ref().map(|x| x.comments.to_owned()).unwrap_or_default(),
-                        member_type: CastMemberType::Bitmap(BitmapMember {
-                            image_ref: first,
-                            reg_point: (info.reg_x, info.reg_y),
-                            script_id: 0,
-                            member_script_ref: None,
-                            info,
-                        }),
-                        color: ColorRef::PaletteIndex(255),
-                        bg_color: bg,
-                        reg_point: (0, 0),
-                    });
-                }
+                // Lazy GIF: register the undecoded payload on the member.
+                // Decoding every frame of every GIF in every castLib at
+                // preload held ~1 GB of decoded planes on mizube's combined
+                // project; the frames now decode on first render touch via
+                // crate::player::gif::ensure_gif_decoded.
+                let info = crate::player::gif::gif_bitmap_info_from_data(&xm.raw_data);
+                // Carry the GIF's own background colour so a sprite drawn
+                // with ink 36 keys out the right thing.
+                let bg = crate::player::gif::background_color(&xm.raw_data)
+                    .map(|(r, g, b)| ColorRef::Rgb(r, g, b))
+                    .unwrap_or(ColorRef::PaletteIndex(0));
+                return Some(CastMember {
+                    number,
+                    name: chunk.member_info.as_ref().map(|x| x.name.to_owned()).unwrap_or_default(),
+                    comments: chunk.member_info.as_ref().map(|x| x.comments.to_owned()).unwrap_or_default(),
+                    member_type: CastMemberType::Bitmap(BitmapMember {
+                        image_ref: crate::player::gif::PLACEHOLDER_REF,
+                        reg_point: (info.reg_x, info.reg_y),
+                        script_id: 0,
+                        member_script_ref: None,
+                        info,
+                        pending_gif: Some(xm.raw_data.clone()),
+                    }),
+                    color: ColorRef::PaletteIndex(255),
+                    bg_color: bg,
+                    reg_point: (0, 0),
+                });
             }
             // 2) Check if styled text (XMED format)
             // Only parse as styled text if the Ole type string is "text" or empty
@@ -6093,6 +6095,7 @@ impl CastMember {
                     script_id,
                     member_script_ref: behavior_script_ref,
                     info: bitmap_info.clone(),
+                    pending_gif: None,
                 })
             }
             MemberType::Palette => {
@@ -6570,6 +6573,7 @@ impl CastMember {
                         script_id,
                         member_script_ref,
                         info,
+                        pending_gif: None,
                     })
                 } else {
                     // No decodable RTE2 — fall back to a TextMember from RTE1

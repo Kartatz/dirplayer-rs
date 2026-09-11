@@ -170,6 +170,56 @@ pub fn decode_gif(data: &[u8], bitmap_manager: &mut BitmapManager) -> Option<Gif
 /// The BitmapInfo a GIF frame should report: its own size, no palette of its
 /// own (the frames are already RGBA), registration in the centre like
 /// Director's own imported bitmaps.
+/// Placeholder image_ref for members whose GIF has not decoded yet.
+/// 0 is the manager's invalid-ref sentinel; decode swaps in a real frame.
+pub const PLACEHOLDER_REF: u32 = 0;
+
+/// Header info for a GIF member without decoding its frames: reads the
+/// logical-screen size straight out of the GIF header (bytes 6-9).
+pub fn gif_bitmap_info_from_data(data: &[u8]) -> BitmapInfo {
+    let (w, h) = if data.len() >= 10 {
+        (u16::from_le_bytes([data[6], data[7]]), u16::from_le_bytes([data[8], data[9]]))
+    } else {
+        (1, 1)
+    };
+    gif_bitmap_info(w, h)
+}
+
+/// Decode a member's pending GIF, install the animation and point the
+/// member's image_ref at frame 0. Called on the first render/Lingo touch
+/// of a GIF member so preload never materialises the frame set.
+pub fn ensure_gif_decoded(
+    player: &mut crate::player::DirPlayer,
+    cast_lib: u32,
+    number: u32,
+    data: &[u8],
+) -> bool {
+    if let Some(anim) = decode_gif(data, &mut player.bitmap_manager) {
+        let first = anim.frames[0];
+        log::debug!(
+            "[gif] member {}:{} decoded on first use: {} frames, {}x{}",
+            cast_lib, number, anim.frames.len(), anim.width, anim.height
+        );
+        let key = (cast_lib, number);
+        if !player.gif_animations.contains_key(&key) {
+            player.gif_animations.insert(key, anim);
+        }
+        let member_ref = crate::CastMemberRef {
+            cast_lib: cast_lib as i32,
+            cast_member: number as i32,
+        };
+        if let Some(member) = player.movie.cast_manager.find_mut_member_by_ref(&member_ref) {
+            if let crate::player::cast_member::CastMemberType::Bitmap(b) = &mut member.member_type {
+                b.image_ref = first;
+                b.pending_gif = None;
+            }
+        }
+        true
+    } else {
+        false
+    }
+}
+
 pub fn gif_bitmap_info(width: u16, height: u16) -> BitmapInfo {
     BitmapInfo {
         width,
@@ -346,8 +396,23 @@ mod tests {
 
 /// True when this member number is a GIF the player has loaded.
 pub fn is_gif_member(player: &crate::player::DirPlayer, cast_lib: i32, number: i32) -> bool {
-    cast_lib >= 0 && number >= 0
-        && player.gif_animations.contains_key(&(cast_lib as u32, number as u32))
+    if !(cast_lib >= 0 && number >= 0) {
+        return false;
+    }
+    if player.gif_animations.contains_key(&(cast_lib as u32, number as u32)) {
+        return true;
+    }
+    // Not yet decoded: the member carries the raw payload.
+    let mref = crate::CastMemberRef { cast_lib, cast_member: number };
+    player
+        .movie
+        .cast_manager
+        .find_member_by_ref(&mref)
+        .map(|m| match &m.member_type {
+            crate::player::cast_member::CastMemberType::Bitmap(b) => b.pending_gif.is_some(),
+            _ => false,
+        })
+        .unwrap_or(false)
 }
 
 /// True when this sprite's member is an animated GIF.

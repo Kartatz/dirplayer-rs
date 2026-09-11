@@ -645,6 +645,7 @@ impl CastLib {
                         script_id: 0,
                         member_script_ref: None,
                         info: BitmapInfo::default(),
+                        pending_gif: None,
                     }),
                 ))
             },

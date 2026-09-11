@@ -5634,6 +5634,25 @@ impl WebGL2Renderer {
         sprite_bg_color: Option<(u8, u8, u8)>,
         is_flash_bitmap: bool,
     ) -> Option<(web_sys::WebGlTexture, u32, u32)> {
+        // Lazy GIF members: this is the first time the member is actually
+        // drawn, so decode its payload now (cast preload only registered
+        // the bytes). The member's image_ref swaps to the real frame.
+        {
+            let m = player.movie.cast_manager.find_member_by_ref(member_ref);
+            if let Some(crate::player::cast_member::CastMemberType::Bitmap(b)) =
+                m.map(|x| &x.member_type)
+            {
+                if let Some(data) = &b.pending_gif {
+                    let data = data.clone();
+                    crate::player::gif::ensure_gif_decoded(
+                        player,
+                        member_ref.cast_lib as u32,
+                        member_ref.cast_member as u32,
+                        &data,
+                    );
+                }
+            }
+        }
         // For inks that need matte, ensure create_matte is called first
         // This matches Canvas2D behavior in rendering.rs
         // EXCEPTION: For 32-bit bitmaps with use_alpha=true, we use the embedded alpha channel
