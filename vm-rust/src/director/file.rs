@@ -42,6 +42,11 @@ pub struct DirectorFile {
     pub base_path: Url,
     pub file_name: String,
     pub endian: Endian,
+    /// The raw file bytes, shared (Arc) with lazily-decoded media pending
+    /// sources: a compressed pending references (offset, len) into this slab
+    /// and inflates on first use instead of retaining decompressed planes
+    /// (see PendingBitmap::Compressed).
+    pub raw_slab: Option<std::sync::Arc<Vec<u8>>>,
     pub after_burned: bool,
     pub version: u16,
     pub cast_entries: Vec<CastListEntry>,
@@ -156,6 +161,7 @@ impl DirectorFile {
         let xtra_list = get_xtra_list_chunk(reader, &mut chunk_container, &mut rifx);
 
         return Ok(DirectorFile {
+            raw_slab: None,
             base_path,
             file_name,
             endian,
@@ -1145,11 +1151,13 @@ pub fn read_director_file_bytes(
 ) -> Result<DirectorFile, String> {
     let mut reader = binary_reader::BinaryReader::from_vec(bytes);
 
-    return DirectorFile::read(
+    let mut file = DirectorFile::read(
         file_name.to_owned(),
         Url::from_str(base_path).unwrap(),
         &mut reader,
-    );
+    )?;
+    file.raw_slab = Some(std::sync::Arc::new(bytes.clone()));
+    return Ok(file);
 }
 
 fn get_chunk_data(

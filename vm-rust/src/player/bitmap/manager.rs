@@ -135,6 +135,24 @@ impl BitmapManager {
             PendingBitmap::JpegWithAlfa { jpeg, alfa, info } => {
                 decode_jpeg_bitmap(&jpeg, &info, Some(&alfa))
             }
+            PendingBitmap::CompressedBitd { slab, offset, len, compression_id, info, cast_lib, version } => {
+                match PendingBitmap::inflate_slice(&slab, offset, len, &compression_id) {
+                    Ok(data) => decompress_bitmap(&data, &info, cast_lib, version),
+                    Err(e) => Err(e),
+                }
+            }
+            PendingBitmap::CompressedJpegWithAlfa { slab, jpeg_offset, jpeg_len, alfa_offset, alfa_len, compression_id, info } => {
+                let jpeg_r = PendingBitmap::inflate_slice(&slab, jpeg_offset, jpeg_len, &compression_id);
+                let alfa_r = if alfa_len > 0 {
+                    PendingBitmap::inflate_slice(&slab, alfa_offset, alfa_len, &compression_id)
+                } else {
+                    Ok(Vec::new())
+                };
+                match (jpeg_r, alfa_r) {
+                    (Ok(jpeg), Ok(alfa)) => decode_jpeg_bitmap(&jpeg, &info, Some(&alfa)),
+                    (Err(e), _) | (_, Err(e)) => Err(e),
+                }
+            }
         };
         match decoded {
             Ok(bitmap) => {

@@ -8,7 +8,7 @@ use crate::director::{file::get_children_of_chunk, utils::fourcc_to_string};
 
 use super::{
     chunks::{
-        cast_member::CastMemberDef, key_table::KeyTableChunk, script::ScriptChunk, ChunkContainer,
+        cast_member::{CastMemberDef, ChildMediaSource}, key_table::KeyTableChunk, script::ScriptChunk, ChunkContainer,
     },
     file::{
         get_cast_member_chunk, get_chunk, get_script_chunk, get_script_context_chunk,
@@ -110,11 +110,33 @@ impl CastDef {
                     child.ok()
                 })
                 .collect_vec();
+            let children_ids: Vec<u32> = children_entries
+                .iter()
+                .map(|x| x.section_id as u32)
+                .collect();
+            let child_sources: Vec<Option<ChildMediaSource>> = children_entries
+                .iter()
+                .map(|x| {
+                    chunk_container.chunk_info.get(&x.section_id).map(|info| {
+                        ChildMediaSource {
+                            abs_offset: if rifx.after_burned {
+                                info.offset + rifx.ils_body_offset
+                            } else {
+                                info.offset
+                            },
+                            len: info.len,
+                            compression_id: info.compression_id,
+                        }
+                    })
+                })
+                .collect();
 
             // log_i(format_args!("Member {member_id} name: \"{}\" chunk: {section_id} children: {}", member.member_info.name, children.len()).to_string().as_str());
             let member_def = CastMemberDef {
                 chunk: member,
                 children,
+                children_ids,
+                child_sources,
             };
 
             members.insert(member_id as u32, member_def);

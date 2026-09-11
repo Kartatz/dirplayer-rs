@@ -19,6 +19,27 @@ pub struct CastMemberChunk {
 pub struct CastMemberDef {
     pub chunk: CastMemberChunk,
     pub children: Vec<Option<Chunk>>,
+    /// Chunk ids parallel to `children`: provenance for lazy media.
+    /// The bitmap lazy-decode path resolves the COMPRESSED source of a
+    /// BITD/ediM/ALFA child through its id (see PendingBitmap::Compressed),
+    /// so cast members can keep media compressed until first render.
+    pub children_ids: Vec<u32>,
+    /// Compressed-source provenance parallel to `children` (None for
+    /// children that could not be located in the chunk map): the slice of
+    /// the raw file slab and its compression id, used by the bitmap lazy
+    /// path to keep media compressed until first render.
+    pub child_sources: Vec<Option<ChildMediaSource>>,
+}
+
+/// Where a media chunk lives in the raw file, un-decompressed.
+#[derive(Clone)]
+pub struct ChildMediaSource {
+    /// Absolute offset into the file slab.
+    pub abs_offset: usize,
+    /// Compressed length in the slab.
+    pub len: usize,
+    /// Compression (NULL = stored raw; zlib variants inflate at decode).
+    pub compression_id: crate::director::guid::MoaID,
 }
 
 impl CastMemberChunk {

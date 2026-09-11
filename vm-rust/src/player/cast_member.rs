@@ -3607,11 +3607,74 @@ impl CastMember {
         cast_lib: u32,
         number: u32,
         bitmap_manager: &mut BitmapManager,
+        raw_slab: Option<&std::sync::Arc<Vec<u8>>>,
     ) -> BitmapRef {
+        // Preferred source: the COMPRESSED slice in the raw file slab.
+        // On combined-project movies the decompressed 32-bit planes are
+        // 3-4 GB (vs ~450 MB compressed on disk), so the pending keeps
+        // the compressed bytes and the manager inflates at first use.
+        // The per-child (offset, len, compression) provenance was recorded
+        // at parse time (CastMemberDef::child_sources).
+        let bitd_child_idx = member_def.children.iter()
+            .position(|c| c.as_ref().map(|chunk| chunk.as_bitmap().is_some()).unwrap_or(false));
+        let alfa_child_idx = member_def.children.iter()
+            .position(|c| c.as_ref().map(|chunk| matches!(chunk, Chunk::Raw(d) if !d.is_empty())).unwrap_or(false));
+
         // Search all children for the first Bitmap(BITD) chunk
         // (it may not be at index 0 — other slots can be None or other chunk types)
         let bitd_chunk = member_def.children.iter()
             .find_map(|c| c.as_ref().and_then(|chunk| chunk.as_bitmap()));
+
+        // Compressed-pending fast path: BITD child (+ optional ALFA child)
+        // with slab + source info available.
+        log::debug!(
+            "[lazy-src] member {}: slab={} bitd_idx={:?} src={:?}",
+            number,
+            raw_slab.is_some(),
+            bitd_child_idx,
+            bitd_child_idx.and_then(|i| member_def.child_sources.get(i))
+                .map(|s| s.is_some())
+        );
+        if let Some(slab) = raw_slab {
+            if let Some(bitd_idx) = bitd_child_idx {
+                if let Some(Some(bitd_src)) = member_def.child_sources.get(bitd_idx) {
+                    // JPEG-ness needs the data; mirror the decompressed path's
+                    // classification using the (already-materialised) chunk.
+                    let is_jpeg = bitd_chunk.map(|b| b.data.len() >= 3
+                        && b.data[0] == 0xFF && b.data[1] == 0xD8 && b.data[2] == 0xFF)
+                        .unwrap_or(false);
+                    let alfa_src = alfa_child_idx
+                        .and_then(|i| member_def.child_sources.get(i))
+                        .and_then(|s| s.as_ref());
+                    if is_jpeg {
+                        if let Some(alfa_src) = alfa_src {
+                            let _ = number;
+                            return bitmap_manager.add_bitmap(Bitmap::new_pending(bitmap_info, PendingBitmap::CompressedJpegWithAlfa {
+                                slab: std::sync::Arc::clone(slab),
+                                jpeg_offset: bitd_src.abs_offset,
+                                jpeg_len: bitd_src.len,
+                                alfa_offset: alfa_src.abs_offset,
+                                alfa_len: alfa_src.len,
+                                compression_id: bitd_src.compression_id,
+                                info: bitmap_info.clone(),
+                            }));
+                        }
+                    } else {
+                        let _ = number;
+                        return bitmap_manager.add_bitmap(Bitmap::new_pending(bitmap_info, PendingBitmap::CompressedBitd {
+                            slab: std::sync::Arc::clone(slab),
+                            offset: bitd_src.abs_offset,
+                            len: bitd_src.len,
+                            compression_id: bitd_src.compression_id,
+                            info: bitmap_info.clone(),
+                            cast_lib,
+                            version: member_def.children[bitd_idx]
+                                .as_ref().and_then(|c| c.as_bitmap()).map(|b| b.version).unwrap_or(0),
+                        }));
+                    }
+                }
+            }
+        }
 
         if let Some(bitd_chunk) = bitd_chunk {
             // Check if BITD contains JPEG data with a separate ALFA chunk
@@ -5430,6 +5493,7 @@ impl CastMember {
         dir_version: u16,
         palette_id_offset: i16,
         font_table: &HashMap<u16, String>,
+        raw_slab: Option<std::sync::Arc<Vec<u8>>>,
     ) -> CastMember {
         let chunk = &member_def.chunk;
 
@@ -6013,6 +6077,13 @@ impl CastMember {
                     })
                 });
 
+                let media_child_idx = member_def.children.iter().position(|c| {
+                    c.as_ref().map(|chunk| matches!(chunk, Chunk::Media(_))).unwrap_or(false)
+                });
+                let raw_child_idx = member_def.children.iter().position(|c| {
+                    c.as_ref().map(|chunk| matches!(chunk, Chunk::Raw(d) if !d.is_empty())).unwrap_or(false)
+                });
+
                 let new_bitmap_ref = if let Some(media) = media_chunk {
                     // Check if the media chunk contains JPEG data
                     let is_jpeg = if media.audio_data.len() >= 4 {
@@ -6037,30 +6108,48 @@ impl CastMember {
                             })
                         });
 
-                        match decode_jpeg_bitmap(&media.audio_data, &bitmap_info, alfa_data) {
-                            Ok(new_bitmap) => {
-                                debug!(
-                                    "Successfully decoded JPEG: {}x{}, bit_depth: {}",
-                                    new_bitmap.width, new_bitmap.height, new_bitmap.bit_depth
-                                );
-                                bitmap_manager.add_bitmap(new_bitmap)
+                        // Lazy: register the encoded (or slab-compressed) source
+                        // and decode on first use. The eager decode here is what
+                        // held a full width x height x 4 plane per JPEG member
+                        // of every castLib at preload (~3 GB on mizube).
+                        let jpeg_src = media_child_idx
+                            .and_then(|i| member_def.child_sources.get(i))
+                            .and_then(|s| s.as_ref());
+                        let alfa_src = raw_child_idx
+                            .and_then(|i| member_def.child_sources.get(i))
+                            .and_then(|s| s.as_ref());
+                        if let (Some(slab), Some(jpeg_src)) = (raw_slab.as_ref(), jpeg_src) {
+                            let _ = number;
+                            if let Some(alfa_src) = alfa_src {
+                                bitmap_manager.add_bitmap(Bitmap::new_pending(&bitmap_info, PendingBitmap::CompressedJpegWithAlfa {
+                                    slab: std::sync::Arc::clone(slab),
+                                    jpeg_offset: jpeg_src.abs_offset,
+                                    jpeg_len: jpeg_src.len,
+                                    alfa_offset: alfa_src.abs_offset,
+                                    alfa_len: alfa_src.len,
+                                    compression_id: jpeg_src.compression_id,
+                                    info: bitmap_info.clone(),
+                                }))
+                            } else {
+                                bitmap_manager.add_bitmap(Bitmap::new_pending(&bitmap_info, PendingBitmap::CompressedJpegWithAlfa {
+                                    slab: std::sync::Arc::clone(slab),
+                                    jpeg_offset: jpeg_src.abs_offset,
+                                    jpeg_len: jpeg_src.len,
+                                    alfa_offset: 0,
+                                    alfa_len: 0,
+                                    compression_id: jpeg_src.compression_id,
+                                    info: bitmap_info.clone(),
+                                }))
                             }
-                            Err(e) => {
-                                warn!(
-                                    "Failed to decode JPEG bitmap {}: {:?}. Using empty image.",
-                                    number, e
-                                );
-                                bitmap_manager.add_bitmap(Bitmap::new(
-                                    1,
-                                    1,
-                                    8,
-                                    8,
-                                    0,
-                                    PaletteRef::BuiltIn(BuiltInPalette::GrayScale),
-                                ))
-                            }
+                        } else {
+                            let _ = number;
+                            bitmap_manager.add_bitmap(Bitmap::new_pending(&bitmap_info, PendingBitmap::JpegWithAlfa {
+                                jpeg: media.audio_data.clone(),
+                                alfa: alfa_data.map(|v| v.clone()).unwrap_or_default(),
+                                info: bitmap_info.clone(),
+                            }))
                         }
-                    } else {
+                                        } else {
                         // Media chunk exists but doesn't contain JPEG, fall back to BITD
                         Self::decode_bitmap_from_bitd(
                             member_def,
@@ -6068,6 +6157,7 @@ impl CastMember {
                             cast_lib,
                             number,
                             bitmap_manager,
+                            raw_slab.as_ref(),
                         )
                     }
                 } else {
@@ -6078,6 +6168,7 @@ impl CastMember {
                         cast_lib,
                         number,
                         bitmap_manager,
+                        raw_slab.as_ref(),
                     )
                 };
 

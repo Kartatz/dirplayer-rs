@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use binary_reader::BinaryReader;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct MoaID {
     data1: u32,
     data2: u16,

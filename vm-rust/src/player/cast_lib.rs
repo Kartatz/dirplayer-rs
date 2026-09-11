@@ -391,6 +391,7 @@ impl CastLib {
             self.set_name(get_basename_no_extension(load_file_name));
         }
         let font_table = file.font_table.clone();
+        let raw_slab = file.raw_slab.clone();
         if let Some(cast_def) = file.casts.first_mut() {
             log::debug!(
                 "Applying cast def to castLib {} ('{}'): {} members",
@@ -398,7 +399,7 @@ impl CastLib {
                 self.name,
                 cast_def.members.len()
             );
-            self.apply_cast_def_releasing(cast_def, bitmap_manager, &font_table);
+            self.apply_cast_def_releasing(cast_def, bitmap_manager, &font_table, raw_slab.as_ref());
         } else {
             log_i(
                 format_args!(
@@ -423,8 +424,9 @@ impl CastLib {
         cast_def: &CastDef,
         bitmap_manager: &mut BitmapManager,
         font_table: &HashMap<u16, String>,
+        raw_slab: Option<&std::sync::Arc<Vec<u8>>>,
     ) {
-        self.apply_cast_def_inner(cast_def, bitmap_manager, font_table, false);
+        self.apply_cast_def_inner(cast_def, bitmap_manager, font_table, false, raw_slab);
     }
 
     pub fn apply_cast_def_releasing(
@@ -432,8 +434,9 @@ impl CastLib {
         cast_def: &mut CastDef,
         bitmap_manager: &mut BitmapManager,
         font_table: &HashMap<u16, String>,
+        raw_slab: Option<&std::sync::Arc<Vec<u8>>>,
     ) {
-        self.apply_cast_def_inner(cast_def, bitmap_manager, font_table, true);
+        self.apply_cast_def_inner(cast_def, bitmap_manager, font_table, true, raw_slab);
     }
 
     fn apply_cast_def_inner(
@@ -442,6 +445,7 @@ impl CastLib {
         bitmap_manager: &mut BitmapManager,
         font_table: &HashMap<u16, String>,
         release_per_member: bool,
+        raw_slab: Option<&std::sync::Arc<Vec<u8>>>,
     ) {
         self.lctx = cast_def.lctx.clone();
         // AUTHORITATIVE: a cast's own name table claims the global display
@@ -475,6 +479,7 @@ impl CastLib {
         let mut member_ids: Vec<u32> = cast_def.members.keys().copied().collect();
         member_ids.sort_unstable();
         for id in member_ids {
+            let slab_for_member = raw_slab.cloned();
             let member = if release_per_member {
                 // SAFETY-free equivalent of get_mut through a shared ref:
                 // the release path is invoked with an exclusive borrow in
@@ -485,21 +490,21 @@ impl CastLib {
                 unsafe {
                     let def_mut = &mut *def_ptr.cast_mut();
                     let member_def = def_mut.members.get_mut(&id).unwrap();
-                    let member = CastMember::from(self.number, id, member_def, &self.lctx, bitmap_manager, self.dir_version, self.palette_id_offset, font_table);
+                    let member = CastMember::from(self.number, id, member_def, &self.lctx, bitmap_manager, self.dir_version, self.palette_id_offset, font_table, slab_for_member);
                     member_def.children.clear();
                     member_def.chunk.specific_data_raw.shrink_to_fit();
                     member
                 }
             } else {
                 let member_def = cast_def.members.get(&id).unwrap();
-                CastMember::from(self.number, id, member_def, &self.lctx, bitmap_manager, self.dir_version, self.palette_id_offset, font_table)
+                CastMember::from(self.number, id, member_def, &self.lctx, bitmap_manager, self.dir_version, self.palette_id_offset, font_table, slab_for_member)
             };
             self.insert_member(id, member);
             n_applied += 1;
             #[cfg(target_arch = "wasm32")]
             {
                 let mb = heap_mb();
-                if mb > last_heap + 8 {
+                if mb > last_heap + 1 {
                     // A single member costing >8 MB is a decode we
                     // probably wanted to defer.
                     let m = self.members.get(&id);
@@ -512,7 +517,7 @@ impl CastLib {
                         Some(CastMemberType::Groove3gm(_)) => "groove3gm",
                         _ => "other",
                     };
-                    log::debug!("[heap] member {} (+{} MB) type={} name={:?}", id, mb - last_heap, ty, m.map(|x| x.name.as_str()));
+                    log::error!("[heap] castLib {} member {} (+{} MB) type={} name={:?}", self.number, id, mb - last_heap, ty, m.map(|x| x.name.as_str()));
                 }
                 last_heap = mb;
             }

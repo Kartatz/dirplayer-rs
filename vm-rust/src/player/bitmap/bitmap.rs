@@ -210,6 +210,67 @@ pub enum PendingBitmap {
         alfa: Vec<u8>,
         info: BitmapInfo,
     },
+    /// Compressed source for the BITD body (afterburned casts): a slice of
+    /// the raw file slab plus its (un)compression id. On combined-project
+    /// movies the decompressed 32-bit planes total 3-4 GB while the
+    /// compressed files are ~450 MB — retaining the compressed slice keeps
+    /// every castLib loadable inside the wasm32 heap.
+    CompressedBitd {
+        slab: std::sync::Arc<Vec<u8>>,
+        offset: usize,
+        len: usize,
+        compression_id: crate::director::guid::MoaID,
+        info: BitmapInfo,
+        cast_lib: u32,
+        version: u16,
+    },
+    /// Compressed ediM JPEG + separate ALFA (afterburned casts).
+    CompressedJpegWithAlfa {
+        slab: std::sync::Arc<Vec<u8>>,
+        jpeg_offset: usize,
+        jpeg_len: usize,
+        alfa_offset: usize,
+        alfa_len: usize,
+        compression_id: crate::director::guid::MoaID,
+        info: BitmapInfo,
+    },
+}
+
+impl PendingBitmap {
+    /// Inflate a (possibly zlib-compressed) slab slice. NULL compression
+    /// returns the slice as-is.
+    pub fn inflate_slice(
+        slab: &[u8],
+        offset: usize,
+        len: usize,
+        compression_id: &crate::director::guid::MoaID,
+    ) -> Result<Vec<u8>, String> {
+        if offset + len > slab.len() {
+            return Err(format!(
+                "pending slice out of range: off={}, len={}, slab={}",
+                offset,
+                len,
+                slab.len()
+            ));
+        }
+        let raw = &slab[offset..offset + len];
+        if *compression_id == crate::director::guid::NULL_COMPRESSION_GUID {
+            return Ok(raw.to_vec());
+        }
+        if *compression_id == crate::director::guid::ZLIB_COMPRESSION_GUID
+            || *compression_id == crate::director::guid::ZLIB_COMPRESSION_GUID2
+        {
+            let mut decoder = flate2::read::ZlibDecoder::new(raw);
+            let mut out = Vec::new();
+            std::io::Read::read_to_end(&mut decoder, &mut out)
+                .map_err(|e| format!("zlib inflate failed: {}", e))?;
+            return Ok(out);
+        }
+        return Err(format!(
+            "pending source uses unsupported compression {:?}",
+            compression_id
+        ));
+    }
 }
 
 impl Bitmap {
