@@ -3553,6 +3553,20 @@ impl Score {
         instance_list
     }
 
+    /// Exact-frame tempo channel entry: Some((mode, cue)) only when this
+    /// frame has its OWN tempo entry. Director tempo entries are per-frame
+    /// settings (ScummVM attaches TempoChannelData to the frame record it
+    /// appears in, not a span): a 248 "wait for click" at one frame must not
+    /// hold every later frame that lacks its own entry. In this movie's data
+    /// the next entry after the 248 at frame 696 is a 247 at frame 854 —
+    /// span semantics would demand ~150 clicks to leave the intro.
+    pub fn get_frame_tempo_entry(&self, frame: u32) -> Option<(u8, u16)> {
+        let (_, td) = self.tempo_channel_data
+            .iter()
+            .find(|(frame_idx, _)| (*frame_idx as u32) + 1 == frame)?;
+        Some((td.tempo, td.tempo_cue_point))
+    }
+
     pub fn get_frame_tempo(&self, frame: u32) -> Option<u32> {
         // Search through tempo_channel_data to find the most recent tempo change
         // at or before the requested frame.

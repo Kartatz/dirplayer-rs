@@ -958,6 +958,16 @@ pub async fn run_player_command(command: PlayerVMCommand) -> Result<DatumRef, Sc
             if !player_is_playing().await {
                 return Ok(DatumRef::Void);
             }
+
+            // Tempo channel mode 248 ("wait for mouse click or key press"):
+            // any mouseUp releases the held playhead. Set before dispatch —
+            // the release is a score-level gate, independent of what (if
+            // anything) the click hits.
+            reserve_player_mut(|player| {
+                if player.tempo_wait_click {
+                    player.tempo_wait_release = true;
+                }
+            });
             // `the mouseUpScript` (if set) is dispatched at the END of the
             // mouseUp pipeline (post-sprite/cast/frame), via the existing
             // player_dispatch_movie_callback call further below. We
@@ -1122,22 +1132,44 @@ pub async fn run_player_command(command: PlayerVMCommand) -> Result<DatumRef, Sc
 
                 // First check for member behavior script (stored in member_script_ref)
                 if let Some(script_ref) = member.get_member_script_ref() {
+                    debug!(
+                        "[mouseUp] Cast member '{}' has behavior script (cast_lib={}, member={})",
+                        member.name, script_ref.cast_lib, script_ref.cast_member
+                    );
+
                     if let Some(script) = player.movie.cast_manager.get_script_by_ref(script_ref) {
                         if let Some(handler) = script.get_own_handler_ref(Symbol::builtin(BuiltInSymbol::MouseUp)) {
+                            debug!("[mouseUp] member_script_ref script has mouseUp handler, executing it");
                             return Some((None, handler, vec![]));
                         }
+                        debug!("[mouseUp] member_script_ref script resolved but has NO mouseUp handler");
+                    } else {
+                        debug!("[mouseUp] member_script_ref script FAILED to resolve");
                     }
                 }
 
                 // Fallback: check for script_id and get directly from lctx.scripts
                 let script_id = member.get_script_id()?;
+                debug!(
+                    "[mouseUp] Cast member '{}' has script {}, getting from lctx.scripts",
+                    member.name, script_id
+                );
 
                 let script = {
                     let cast_lib = player.movie.cast_manager.get_cast_mut(member_ref.cast_lib as u32);
                     cast_lib.get_behavior_script_from_lctx(script_id)
                 };
 
-                let script = script?;
+                let script = match script {
+                    Some(s) => {
+                        debug!("[mouseUp] Behavior script {} found", script_id);
+                        s
+                    }
+                    None => {
+                        debug!("[mouseUp] Behavior script {} NOT FOUND in lctx.scripts", script_id);
+                        return None;
+                    }
+                };
                 let handler = script.get_own_handler_ref(Symbol::builtin(BuiltInSymbol::MouseUp))?;
 
                 // Try to get the handler
@@ -1296,6 +1328,14 @@ pub async fn run_player_command(command: PlayerVMCommand) -> Result<DatumRef, Sc
         PlayerVMCommand::KeyDown(key, code) => {
             crate::player::wait_for_handler_gap().await;
             crate::player::hold_draw_for_input_handler();
+
+            // Tempo channel mode 248: a key press releases the held playhead
+            // (same as a mouseUp, see the MouseUp handler above).
+            reserve_player_mut(|player| {
+                if player.tempo_wait_click {
+                    player.tempo_wait_release = true;
+                }
+            });
             // Set command_handler_yielding so that:
             // 1. updateStage() always yields (bypasses is_yield_safe check),
             //    letting the browser process keyUp events during repeat-while-

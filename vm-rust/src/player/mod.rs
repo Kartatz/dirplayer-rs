@@ -542,6 +542,12 @@ pub struct DirPlayer {
     pub debug_datum_refs: Vec<DatumRef>,
     pub eval_scope_index: Option<u32>,
     pub delay_until: Option<chrono::DateTime<chrono::Local>>,
+    /// Tempo channel mode 248 ("wait for mouse click or key press") hold.
+    /// Set when a frame with mode 248 is entered; while set the playhead does
+    /// not advance. A mouseUp or keyDown releases it for one advance.
+    pub tempo_wait_click: bool,
+    /// Released by a mouseUp/keyDown while the wait held. The frame advances once.
+    pub tempo_wait_release: bool,
     /// Pending gotoNetMovie operation: (task_id, frame_destination).
     /// Overwritten by subsequent gotoNetMovie/go-to-movie calls (cancels previous).
     pub pending_goto_net_movie: Option<(u32, MovieFrameTarget)>,
@@ -855,6 +861,8 @@ impl DirPlayer {
             debug_datum_refs: vec![],
             eval_scope_index: None,
             delay_until: None,
+            tempo_wait_click: false,
+            tempo_wait_release: false,
             pending_goto_net_movie: None,
             goto_wait_active: false,
             pending_movie_init: false,
@@ -1586,6 +1594,22 @@ impl DirPlayer {
 
         // Cache the tempo for this frame
         self.refresh_frame_tempo();
+
+        // Tempo channel special modes apply on frame entry (they are
+        // per-frame settings, not spans — see get_frame_tempo_entry).
+        //   247: delay cue seconds before the next advance.
+        //   248: hold the playhead until a mouse click or key press.
+        // delay_until doubles as the delay() Lingo command's storage; entry
+        // to a new frame invalidates any pending delay from the old frame.
+        self.tempo_wait_release = false;
+        let tempo_entry = self.movie.score.get_frame_tempo_entry(self.movie.current_frame);
+        self.tempo_wait_click = matches!(tempo_entry, Some((248, _)));
+        self.delay_until = match tempo_entry {
+            Some((247, cue)) if cue > 0 => Some(
+                chrono::Local::now() + chrono::Duration::seconds(cue as i64)
+            ),
+            _ => None,
+        };
 
         // If the player isn't playing yet (i.e., during initial load),
         // reset the entered flags so that beginSprite will be called again
@@ -6189,6 +6213,16 @@ pub async fn run_single_frame() -> (bool, bool) {
         return (is_playing, is_script_paused);
     }
 
+    // Tempo channel mode 248: hold the playhead on this frame until a mouse
+    // click or key press releases it. Like delay(), the hold stops the tick
+    // before exitFrame — the frame is not exited while it is being held.
+    // A released hold falls through so this frame exits and advances once.
+    let tempo_wait_click = reserve_player_ref(|player|
+        player.tempo_wait_click && !player.tempo_wait_release);
+    if tempo_wait_click {
+        return (is_playing, is_script_paused);
+    }
+
     let (has_player_frame_changed, has_frame_changed_in_go, go_direction) =
         reserve_player_ref(|player| {
             (
@@ -6316,6 +6350,8 @@ pub async fn run_single_frame() -> (bool, bool) {
                 player.advance_frame();
 
                 player.has_player_frame_changed = false;
+                player.tempo_wait_click = false;
+                player.tempo_wait_release = false;
                 (player.is_playing, player.is_script_paused)
             });
         }
