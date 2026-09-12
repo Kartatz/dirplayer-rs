@@ -21,6 +21,14 @@ pub enum PlayerVMEvent {
     Global(Symbol, Vec<DatumRef>),
     Targeted(Symbol, Vec<DatumRef>, Option<Vec<ScriptInstanceRef>>),
     Callback(DatumRef, Symbol, Vec<DatumRef>),
+    /// Run a sprite's cast-member script handler. Director treats a cast
+    /// member's script as the sprite's behavior; the engine spawns score-
+    /// authored behaviors as instances but consults member scripts only in
+    /// the click pipelines. mouseEnter/mouseLeave/mouseWithin had no such
+    /// fallback, so hover-revealed controls (mizube's menu buttons:
+    /// `mouseEnter → sprite(150).visible = 1` on the member script, with no
+    /// score-authored behaviors) never revealed.
+    MemberScript(i16, Symbol, Vec<DatumRef>),
 }
 
 pub fn player_dispatch_global_event(handler_name: Symbol, args: &Vec<DatumRef>) {
@@ -90,6 +98,52 @@ pub fn player_dispatch_event_to_sprite(
     .unwrap();
 }
 
+/// Queue a cast-member script rollover handler for `sprite_num`, but only
+/// when the sprite's behavior instances don't already provide the handler
+/// (score-authored behaviors run through the instance dispatch above; this
+/// fallback covers member scripts, which nothing else dispatches for
+/// mouseEnter/mouseLeave/mouseWithin — so it cannot double-fire).
+pub fn player_dispatch_member_script_rollover(
+    handler_name: &str,
+    sprite_num: i16,
+) {
+    use crate::player::script::ScriptHandlerRef;
+
+    let payload: Option<(i16, Symbol, ScriptHandlerRef)> = reserve_player_mut(|player| {
+        let handler_sym = Symbol::from_str(&handler_name.to_string());
+
+        // A behavior instance on this sprite already provides the handler —
+        // the instance dispatch covers it.
+        let sprite = player.movie.score.get_sprite(sprite_num)?;
+        let instance_provides = sprite.script_instance_list.iter().any(|inst_ref| {
+            crate::player::handlers::datum_handlers::script_instance::ScriptInstanceUtils::get_script_instance_handler(
+                handler_sym.clone(),
+                inst_ref,
+                player,
+            )
+            .ok()
+            .flatten()
+            .is_some()
+        });
+        if instance_provides {
+            return None;
+        }
+
+        let handler = get_member_script_handler(player, sprite_num, handler_name)?;
+        Some((sprite_num, handler_sym, handler))
+    });
+    let Some((sprite_num, handler_sym, _handler)) = payload else {
+        return;
+    };
+    if let Some(tx) = crate::player::active_event_tx() {
+        let _ = tx.try_send(PlayerVMEvent::MemberScript(
+            sprite_num,
+            handler_sym,
+            vec![],
+        ));
+    }
+}
+
 /// Returns true when a behavior called `stopEvent()`, so the caller can also
 /// skip the rest of the hierarchy it owns (the cast member script and the
 /// primary event handler live in `commands.rs`, outside this dispatch).
@@ -133,6 +187,7 @@ pub fn dispatch_rollover_events() {
     for sprite_num in &prev_hovered {
         if !now_hovered.contains(sprite_num) {
             player_dispatch_event_to_sprite(Symbol::from_str(&"mouseLeave".to_string()), &vec![], *sprite_num as u16);
+            player_dispatch_member_script_rollover("mouseLeave", *sprite_num as i16);
         }
     }
     for sprite_num in &now_hovered {
@@ -142,6 +197,7 @@ pub fn dispatch_rollover_events() {
             "mouseEnter"
         };
         player_dispatch_event_to_sprite(Symbol::from_str(&handler.to_string()), &vec![], *sprite_num as u16);
+        player_dispatch_member_script_rollover(handler, *sprite_num as i16);
     }
 }
 
@@ -1462,6 +1518,23 @@ pub async fn run_event_loop(rx: Receiver<PlayerVMEvent>) {
             }
             PlayerVMEvent::Callback(receiver, name, args) => {
                 player_call_datum_handler(&receiver, name, &args).await
+            }
+            PlayerVMEvent::MemberScript(sprite_num, name, args) => {
+                let handler = reserve_player_mut(|player| {
+                    get_member_script_handler(player, sprite_num, name.as_str())
+                });
+                let Some(handler) = handler else {
+                    return;
+                };
+                reserve_player_mut(|player| {
+                    player.member_script_sprite_num = sprite_num;
+                });
+                let result =
+                    player_call_script_handler(None, handler, &args).await;
+                reserve_player_mut(|player| {
+                    player.member_script_sprite_num = 0;
+                });
+                result.map(|_| DatumRef::Void)
             }
         };
         match result {

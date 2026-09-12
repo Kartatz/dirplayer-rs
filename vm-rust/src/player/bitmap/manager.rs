@@ -182,6 +182,16 @@ impl BitmapManager {
 
     #[allow(dead_code)]
     pub fn get_bitmap_mut(&mut self, bitmap_ref: BitmapRef) -> Option<&mut Bitmap> {
+        // Decode pending sources here too, not just in get_bitmap(): every
+        // render path (stage sprites, filmloop inner sprites, ink-9 masks)
+        // fetches through get_bitmap_mut, and a pending bitmap handed to
+        // copy_pixels has w/h set but empty data — the per-pixel reads then
+        // index past the empty Vec and panic (bounds check in
+        // get_pixel_color_ref, seen on mizube when a click advanced the
+        // playhead before the new frame's cast art decoded).
+        if self.bitmaps.get(&bitmap_ref)?.pending.is_some() {
+            self.decode_pending(bitmap_ref);
+        }
         // Increment version when giving mutable access, as the bitmap may be modified
         // This ensures texture caches know to re-upload the texture
         if let Some(bitmap) = self.bitmaps.get_mut(&bitmap_ref) {

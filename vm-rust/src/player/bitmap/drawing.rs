@@ -594,6 +594,38 @@ impl Bitmap {
             return self.get_bg_color_ref();
         }
 
+        // x/y are in bounds, but the pixel buffer can still be shorter than
+        // w*h*bpp: a lazily-decoded bitmap that has not materialised yet keeps
+        // its score dimensions with an empty `data`. Indexing straight into it
+        // panicked (bounds check) inside render blits; read short buffers as
+        // background pixels instead so a not-yet-decoded source renders
+        // blank for a frame rather than crashing the draw loop.
+        let pixel_bytes = match self.bit_depth {
+            1 => (self.width as usize + 7) / 8,
+            4 => (self.width as usize + 1) / 2,
+            8 => self.width as usize,
+            16 => self.width as usize * 2,
+            32 => self.width as usize * 4,
+            _ => 0,
+        };
+        let byte_index = match self.bit_depth {
+            1 => (y * self.width as usize + x) / 8,
+            4 => ((y * self.width as usize + x) * 4) / 8,
+            8 => y * self.width as usize + x,
+            16 => (y * self.width as usize + x) * 2,
+            32 => (y * self.width as usize + x) * 4,
+            _ => 0,
+        };
+        let needed_end = byte_index
+            + match self.bit_depth {
+                16 => 2,
+                32 => 4,
+                _ => 1,
+            };
+        if pixel_bytes == 0 || needed_end > self.data.len() {
+            return self.get_bg_color_ref();
+        }
+
         match self.bit_depth {
             1 => {
                 // 1-bit images pack 8 pixels per byte, MSB first — the same bit
